@@ -17,7 +17,7 @@ daemon, telemetry, or root requirement.
 - Protocol-aware negotiation, authentication, TLS, response, and timeout checks.
 - Safe destination resolution with private-network, metadata, rebinding, and redirect controls.
 - Bounded workers, queues, target concurrency, request rate, response size, and retries.
-- Streaming TXT, CSV, JSON, JSONL, and NDJSON input with exact optional deduplication.
+- Streaming TXT, CSV, JSON, JSONL, NDJSON, and gzip input with exact optional deduplication.
 - Repeat measurements, reliability thresholds, latency distributions, and explainable scores.
 - JSONL, CSV, TXT, and human-readable output with clean stdout/stderr separation.
 - Atomic credential-bearing working lists and optional local run history.
@@ -67,6 +67,7 @@ Common workflows:
 relayprobe check proxies.txt
 relayprobe check --format jsonl --concurrency 128 proxies.txt > results.jsonl
 relayprobe check --format txt --output-status ok proxies.txt > working-redacted.txt
+relayprobe check --quiet --summary-output summary.json --require-count 10 proxies.txt
 relayprobe inspect socks5://127.0.0.1:1080 --target https://example.com/
 relayprobe import --protocol socks5 raw.txt > normalized.txt
 relayprobe check --input-format json --repeat 5 --save proxies.json
@@ -103,13 +104,19 @@ JSON accepts a streamed array of URI strings or objects containing `proxy`, or
 `protocol`, `host`, and `port`. JSONL and NDJSON accept the same values one per
 line.
 
+Gzip input is detected by its magic bytes on files and standard input. Automatic
+format detection understands names such as `proxies.csv.gz` and
+`proxies.jsonl.gz`; explicit `--input-format` remains available for streams
+without a useful filename.
+
 URI credentials must be percent-encoded where necessary. Supply credentials in
 a mode-0600 file or protected standard input instead of shell arguments. Normal
 output and saved history redact passwords. A redacted `***` password cannot be
 re-imported as a credential.
 
-Input is capped at 256 MiB by default and individual text records at 1 MiB.
-Parsing, validation, persistence, and ordinary output are streamed.
+Input is capped at 256 MiB by default across the complete invocation and
+individual text records at 1 MiB. For gzip sources, the aggregate cap applies to
+decompressed bytes. Parsing, validation, persistence, and ordinary output are streamed.
 `--no-deduplicate` avoids retaining endpoint hashes when constant parser memory
 is more important than duplicate suppression.
 
@@ -183,11 +190,21 @@ relayprobe config init
 relayprobe config validate --config ~/.config/relayprobe/config.json
 ```
 
-Supported environment variables are `RELAYPROBE_CONCURRENCY`,
-`RELAYPROBE_QUEUE_SIZE`, `RELAYPROBE_CONNECT_TIMEOUT`,
-`RELAYPROBE_REQUEST_TIMEOUT`, `RELAYPROBE_DNS_CACHE_TTL`,
-`RELAYPROBE_RETRY_BACKOFF`, `RELAYPROBE_MIN_SUCCESS_RATE`,
-`RELAYPROBE_DATA_DIR`, and comma-separated `RELAYPROBE_TARGETS`.
+Environment configuration covers every persistent engine setting:
+
+| Area | Variables |
+|---|---|
+| Concurrency | `RELAYPROBE_CONCURRENCY`, `RELAYPROBE_QUEUE_SIZE`, `RELAYPROBE_PER_TARGET_CONCURRENCY`, `RELAYPROBE_REQUESTS_PER_SECOND` |
+| Measurements | `RELAYPROBE_REPEAT`, `RELAYPROBE_MIN_SUCCESS_RATE`, `RELAYPROBE_STOP_ON_SUCCESS`, `RELAYPROBE_RETRY_PERMANENT_FAILURES` |
+| Time | `RELAYPROBE_CONNECT_TIMEOUT`, `RELAYPROBE_REQUEST_TIMEOUT`, `RELAYPROBE_DNS_CACHE_TTL`, `RELAYPROBE_RETRY_BACKOFF`, `RELAYPROBE_PROGRESS_INTERVAL` |
+| Destinations | `RELAYPROBE_TARGETS`, `RELAYPROBE_ALLOWED_TARGET_HOSTS`, `RELAYPROBE_MAX_REDIRECTS`, `RELAYPROBE_ALLOW_PRIVATE_TARGETS`, `RELAYPROBE_ALLOW_REMOTE_DNS` |
+| Resource limits | `RELAYPROBE_MAX_INPUT_BYTES`, `RELAYPROBE_MAX_RESPONSE_BYTES` |
+| Persistence | `RELAYPROBE_DATA_DIR`, `RELAYPROBE_SAVE` |
+
+List values are comma-separated. Boolean values use Go boolean syntax such as
+`true` or `false`. Invalid environment values stop execution before network
+activity. A boolean inherited from the environment or configuration file can be
+disabled explicitly, for example with `--allow-remote-dns=false`.
 
 Target hostnames form an exact allowlist. Additional redirect hostnames require
 `--allow-host`. Private, loopback, link-local, carrier-grade NAT, cloud metadata,
@@ -200,6 +217,12 @@ unless the deliberate `--allow-private-targets` exception is used.
 are flushed, synchronized, and atomically renamed. Passwords and sensitive
 target URL components are never persisted. Retention cleanup is preview-only
 until `runs prune --execute` is supplied.
+
+`--summary-output PATH` writes the final schema-versioned run summary as
+indented JSON without enabling history. The file is mode 0600, synchronized,
+and atomically committed only after a complete run. Existing files require
+`--force`. `--require-count N` returns exit code 5 when fewer than `N` proxies
+validate, after committing the completed summary and other requested outputs.
 
 `--working-output` is deliberately different: it creates a reusable normalized
 list with credentials, mode 0600. It commits only after a complete run, refuses
@@ -217,7 +240,7 @@ Statuses are `ok`, `failed`, `timeout`, `auth_failed`, `policy_blocked`,
 | 2 | Invalid command, option, or configuration |
 | 3 | Operational failure |
 | 4 | No valid input |
-| 5 | No validated proxy when `--require-success` is active |
+| 5 | The `--require-success` or `--require-count` threshold was not met |
 | 130 | Interrupted by signal |
 
 ## Shell completion

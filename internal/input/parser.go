@@ -2,6 +2,8 @@ package input
 
 import (
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
@@ -52,9 +54,10 @@ type Rejection struct {
 }
 
 type Parser struct {
-	opts  Options
-	seen  map[[12]byte]struct{}
-	Stats model.InputStats
+	opts      Options
+	seen      map[[12]byte]struct{}
+	usedBytes int64
+	Stats     model.InputStats
 }
 
 func New(opts Options) *Parser {
@@ -142,10 +145,14 @@ func (p *Parser) Emit(r io.Reader, emit func(model.Proxy) error, reject func(Rej
 }
 
 func (p *Parser) EmitSource(r io.Reader, format Format, source string, emit func(model.Proxy) error, reject func(Rejection)) error {
+	remaining := p.opts.MaxBytes - p.usedBytes
+	if remaining <= 0 {
+		return fmt.Errorf("input exceeds %d-byte aggregate limit", p.opts.MaxBytes)
+	}
 	oldFormat, oldSource := p.opts.Format, p.opts.Source
 	p.opts.Format, p.opts.Source = format, source
 	defer func() { p.opts.Format, p.opts.Source = oldFormat, oldSource }()
-	lr := &io.LimitedReader{R: r, N: p.opts.MaxBytes + 1}
+	lr := &io.LimitedReader{R: r, N: remaining + 1}
 	r = lr
 	if format == FormatAuto {
 		format, r = detectFormat(source, r)
@@ -161,17 +168,23 @@ func (p *Parser) EmitSource(r io.Reader, format Format, source string, emit func
 	default:
 		err = p.emitText(r, emit, reject)
 	}
+	consumed := remaining + 1 - lr.N
+	p.usedBytes += consumed
 	if err != nil {
 		return err
 	}
-	if p.opts.MaxBytes+1-lr.N > p.opts.MaxBytes {
-		return fmt.Errorf("input exceeds %d-byte limit", p.opts.MaxBytes)
+	if consumed > remaining {
+		return fmt.Errorf("input exceeds %d-byte aggregate limit", p.opts.MaxBytes)
 	}
 	return nil
 }
 
 func detectFormat(source string, r io.Reader) (Format, io.Reader) {
-	switch strings.ToLower(filepath.Ext(source)) {
+	lowerSource := strings.ToLower(source)
+	if strings.HasSuffix(lowerSource, ".gz") {
+		lowerSource = strings.TrimSuffix(lowerSource, ".gz")
+	}
+	switch filepath.Ext(lowerSource) {
 	case ".csv":
 		return FormatCSV, r
 	case ".json":
@@ -189,6 +202,23 @@ func detectFormat(source string, r io.Reader) (Format, io.Reader) {
 		return FormatJSONL, br
 	}
 	return FormatText, br
+}
+
+func MaybeDecompress(r io.Reader) (io.Reader, io.Closer, error) {
+	var header [2]byte
+	n, err := io.ReadFull(r, header[:])
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return nil, nil, fmt.Errorf("read input header: %w", err)
+	}
+	stream := io.MultiReader(bytes.NewReader(header[:n]), r)
+	if n < 2 || header[0] != 0x1f || header[1] != 0x8b {
+		return stream, nil, nil
+	}
+	gz, err := gzip.NewReader(stream)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open gzip input: %w", err)
+	}
+	return gz, gz, nil
 }
 
 func (p *Parser) accept(raw string, line int, emit func(model.Proxy) error, reject func(Rejection)) error {

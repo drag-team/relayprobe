@@ -1,7 +1,11 @@
 package input
 
 import (
+	"bytes"
+	"compress/gzip"
+	"io"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -104,6 +108,55 @@ func TestAutoFormatAndSourceLabels(t *testing.T) {
 	}
 }
 
+func TestGzipAutoFormatAndAggregateLimit(t *testing.T) {
+	var compressed bytes.Buffer
+	zw := gzip.NewWriter(&compressed)
+	if _, err := zw.Write([]byte("host,port\nproxy.test,8080\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reader, closer, err := MaybeDecompress(bytes.NewReader(compressed.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closer.Close()
+	p := New(Options{Format: FormatAuto, DefaultProtocol: model.ProtocolHTTP, MaxBytes: 100})
+	var got []model.Proxy
+	if err := p.EmitSource(reader, FormatAuto, "list.csv.gz", func(x model.Proxy) error {
+		got = append(got, x)
+		return nil
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Host != "proxy.test" || got[0].Port != 8080 {
+		t.Fatalf("got=%+v", got)
+	}
+
+	q := New(Options{Format: FormatText, DefaultProtocol: model.ProtocolHTTP, MaxBytes: 15})
+	if err := q.EmitSource(strings.NewReader("a.test:80\n"), FormatText, "a.txt", func(model.Proxy) error { return nil }, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.EmitSource(strings.NewReader("b.test:80\n"), FormatText, "b.txt", func(model.Proxy) error { return nil }, nil); err == nil || !strings.Contains(err.Error(), "aggregate limit") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestMaybeDecompressPlainAndMalformed(t *testing.T) {
+	reader, closer, err := MaybeDecompress(strings.NewReader("proxy.test:80\n"))
+	if err != nil || closer != nil {
+		t.Fatalf("closer=%v err=%v", closer, err)
+	}
+	b, err := io.ReadAll(reader)
+	if err != nil || string(b) != "proxy.test:80\n" {
+		t.Fatalf("data=%q err=%v", b, err)
+	}
+	if _, _, err := MaybeDecompress(bytes.NewReader([]byte{0x1f, 0x8b, 0x00})); err == nil {
+		t.Fatal("accepted malformed gzip stream")
+	}
+}
+
 func TestJSONLAndRedactedCredentialRejection(t *testing.T) {
 	p := New(Options{Format: FormatJSONL, DefaultProtocol: model.ProtocolHTTP, MaxBytes: 1000})
 	var got []model.Proxy
@@ -142,4 +195,54 @@ func FuzzParseProxy(f *testing.F) {
 			}
 		}
 	})
+}
+
+func BenchmarkParserText(b *testing.B) {
+	data := benchmarkDataset(1000)
+	b.SetBytes(int64(len(data)))
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		p := New(Options{Format: FormatText, DefaultProtocol: model.ProtocolHTTP, MaxBytes: int64(len(data) + 1)})
+		if err := p.Emit(bytes.NewReader(data), func(model.Proxy) error { return nil }, nil); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkParserGzip(b *testing.B) {
+	data := benchmarkDataset(1000)
+	var compressed bytes.Buffer
+	zw := gzip.NewWriter(&compressed)
+	if _, err := zw.Write(data); err != nil {
+		b.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		b.Fatal(err)
+	}
+	payload := append([]byte(nil), compressed.Bytes()...)
+	b.SetBytes(int64(len(data)))
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		reader, closer, err := MaybeDecompress(bytes.NewReader(payload))
+		if err != nil {
+			b.Fatal(err)
+		}
+		p := New(Options{Format: FormatAuto, DefaultProtocol: model.ProtocolHTTP, MaxBytes: int64(len(data) + 1)})
+		if err := p.EmitSource(reader, FormatAuto, "proxies.txt.gz", func(model.Proxy) error { return nil }, nil); err != nil {
+			b.Fatal(err)
+		}
+		if err := closer.Close(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func benchmarkDataset(count int) []byte {
+	var data strings.Builder
+	for i := 0; i < count; i++ {
+		data.WriteString("proxy")
+		data.WriteString(strconv.Itoa(i))
+		data.WriteString(".test:8080\n")
+	}
+	return []byte(data.String())
 }

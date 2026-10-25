@@ -19,10 +19,14 @@ Default safeguards:
   skip mode;
 - overall, connect, input, line, response, concurrency, repeat, redirect, and
   target-count, URL-size, sorting and queue limits, plus a 64 KiB status/header limit;
+- one aggregate decompressed-byte budget across all plain and gzip input sources;
 - proxy passwords redacted from output and omitted from history;
 - redacted `***` passwords rejected when diagnostic output is re-imported;
 - target paths, fragments, and queries removed from persisted observations;
 - history and generated configuration use owner-only permissions;
+- standalone summaries and credential-bearing exports use atomic owner-only files;
+- generated configuration is synchronized and atomically replaced;
+- input/output path aliases are compared after symbolic-link resolution;
 - no shell evaluation, dynamic code loading, privileged operation, or service
   modification.
 

@@ -9,6 +9,24 @@ All notable changes to RelayProbe are documented in this file. The project uses
 ### Added
 
 - Public contribution, security, governance, CI, and release documentation.
+- Transparent gzip input for files and standard input, including nested format detection.
+- Atomic `--summary-output` JSON for CI and non-persistent automation.
+- `--require-count` for minimum validated-proxy thresholds.
+- Environment variables for every persistent engine setting.
+- Repeatable plain and gzip parser microbenchmarks.
+
+### Changed
+
+- Input byte limits are aggregate across sources and apply after decompression.
+- Output/input collision checks resolve symbolic-link aliases.
+- Explicit false CLI booleans now override profiles, environment, and files.
+- Configuration initialization now uses atomic synchronized replacement.
+- Development version advanced to 0.5.0.
+
+### Security
+
+- Compressed inputs cannot bypass the configured decompressed-byte budget.
+- Incomplete runs preserve existing summary files rather than replacing them.
 
 ## [0.4.0] - 2026-10-25
 

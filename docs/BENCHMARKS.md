@@ -69,3 +69,16 @@ controlled measurement.
 
 Compare builds using the same executable, count, concurrency, delay, Go
 version, and host load. Never benchmark against unauthorized proxies.
+
+The 0.5.0 development parser benchmark uses 1,000 distinct text records per
+operation on the same four-vCPU host. Three samples produced these medians:
+
+| Input | Time/op | Decompressed throughput | Allocations/op |
+|---|---:|---:|---:|
+| Plain text | 2.39 ms | 7.91 MB/s | 7,006 |
+| Gzip text | 2.48 ms | 7.62 MB/s | 7,027 |
+
+Gzip detection and decompression added 21 allocations per 1,000-record batch
+and approximately 3.7% median time in this small-input test. Reproduce with
+`go test -run '^$' -bench '^BenchmarkParser' -benchmem -count=3 ./internal/input`.
+The throughput column counts decompressed bytes and is not a network result.

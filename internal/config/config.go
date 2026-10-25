@@ -95,19 +95,55 @@ func Load(path string) (Config, error) {
 }
 
 func applyEnv(c *Config) error {
-	if v := os.Getenv("RELAYPROBE_CONCURRENCY"); v != "" {
-		n, e := strconv.Atoi(v)
-		if e != nil {
-			return fmt.Errorf("invalid RELAYPROBE_CONCURRENCY: %w", e)
+	for _, item := range []struct {
+		name string
+		dst  *int
+	}{
+		{"RELAYPROBE_CONCURRENCY", &c.Concurrency},
+		{"RELAYPROBE_QUEUE_SIZE", &c.QueueSize},
+		{"RELAYPROBE_PER_TARGET_CONCURRENCY", &c.PerTarget},
+		{"RELAYPROBE_REPEAT", &c.Repeat},
+		{"RELAYPROBE_MAX_REDIRECTS", &c.MaxRedirects},
+	} {
+		if err := envInt(item.name, item.dst); err != nil {
+			return err
 		}
-		c.Concurrency = n
 	}
-	if v := os.Getenv("RELAYPROBE_QUEUE_SIZE"); v != "" {
-		n, e := strconv.Atoi(v)
-		if e != nil {
-			return fmt.Errorf("invalid RELAYPROBE_QUEUE_SIZE: %w", e)
+	for _, item := range []struct {
+		name string
+		dst  *int64
+	}{
+		{"RELAYPROBE_MAX_INPUT_BYTES", &c.MaxInputBytes},
+		{"RELAYPROBE_MAX_RESPONSE_BYTES", &c.MaxResponseBytes},
+	} {
+		if err := envInt64(item.name, item.dst); err != nil {
+			return err
 		}
-		c.QueueSize = n
+	}
+	for _, item := range []struct {
+		name string
+		dst  *float64
+	}{
+		{"RELAYPROBE_REQUESTS_PER_SECOND", &c.RateLimit},
+		{"RELAYPROBE_MIN_SUCCESS_RATE", &c.MinSuccessRate},
+	} {
+		if err := envFloat(item.name, item.dst); err != nil {
+			return err
+		}
+	}
+	for _, item := range []struct {
+		name string
+		dst  *bool
+	}{
+		{"RELAYPROBE_ALLOW_PRIVATE_TARGETS", &c.AllowPrivate},
+		{"RELAYPROBE_ALLOW_REMOTE_DNS", &c.AllowRemoteDNS},
+		{"RELAYPROBE_RETRY_PERMANENT_FAILURES", &c.RetryPermanent},
+		{"RELAYPROBE_STOP_ON_SUCCESS", &c.StopOnSuccess},
+		{"RELAYPROBE_SAVE", &c.Save},
+	} {
+		if err := envBool(item.name, item.dst); err != nil {
+			return err
+		}
 	}
 	if v := os.Getenv("RELAYPROBE_CONNECT_TIMEOUT"); v != "" {
 		c.ConnectTimeoutRaw = v
@@ -119,7 +155,10 @@ func applyEnv(c *Config) error {
 		c.DataDir = v
 	}
 	if v := os.Getenv("RELAYPROBE_TARGETS"); v != "" {
-		c.Targets = strings.Split(v, ",")
+		c.Targets = envList(v)
+	}
+	if v := os.Getenv("RELAYPROBE_ALLOWED_TARGET_HOSTS"); v != "" {
+		c.AllowedHosts = envList(v)
 	}
 	if v := os.Getenv("RELAYPROBE_DNS_CACHE_TTL"); v != "" {
 		c.DNSCacheTTLRaw = v
@@ -127,14 +166,73 @@ func applyEnv(c *Config) error {
 	if v := os.Getenv("RELAYPROBE_RETRY_BACKOFF"); v != "" {
 		c.RetryBackoffRaw = v
 	}
-	if v := os.Getenv("RELAYPROBE_MIN_SUCCESS_RATE"); v != "" {
-		n, e := strconv.ParseFloat(v, 64)
-		if e != nil {
-			return fmt.Errorf("invalid RELAYPROBE_MIN_SUCCESS_RATE: %w", e)
-		}
-		c.MinSuccessRate = n
+	if v := os.Getenv("RELAYPROBE_PROGRESS_INTERVAL"); v != "" {
+		c.ProgressRaw = v
 	}
 	return nil
+}
+
+func envInt(name string, dst *int) error {
+	v := os.Getenv(name)
+	if v == "" {
+		return nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fmt.Errorf("invalid %s: %w", name, err)
+	}
+	*dst = n
+	return nil
+}
+
+func envInt64(name string, dst *int64) error {
+	v := os.Getenv(name)
+	if v == "" {
+		return nil
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid %s: %w", name, err)
+	}
+	*dst = n
+	return nil
+}
+
+func envFloat(name string, dst *float64) error {
+	v := os.Getenv(name)
+	if v == "" {
+		return nil
+	}
+	n, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return fmt.Errorf("invalid %s: %w", name, err)
+	}
+	*dst = n
+	return nil
+}
+
+func envBool(name string, dst *bool) error {
+	v := os.Getenv(name)
+	if v == "" {
+		return nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return fmt.Errorf("invalid %s: %w", name, err)
+	}
+	*dst = b
+	return nil
+}
+
+func envList(value string) []string {
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			result = append(result, part)
+		}
+	}
+	return result
 }
 
 func (c *Config) ParseDurations() error {

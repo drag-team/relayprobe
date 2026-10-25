@@ -4,7 +4,9 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestConfigValidation(t *testing.T) {
@@ -61,5 +63,53 @@ func TestLoadRejectsUnknownAndBadEnvironment(t *testing.T) {
 	t.Setenv("RELAYPROBE_CONCURRENCY", "not-a-number")
 	if _, err := Load(""); err == nil {
 		t.Fatal("bad environment accepted")
+	}
+}
+
+func TestCompleteEnvironmentConfiguration(t *testing.T) {
+	values := map[string]string{
+		"RELAYPROBE_CONCURRENCY":              "9",
+		"RELAYPROBE_QUEUE_SIZE":               "18",
+		"RELAYPROBE_PER_TARGET_CONCURRENCY":   "3",
+		"RELAYPROBE_REQUESTS_PER_SECOND":      "12.5",
+		"RELAYPROBE_REPEAT":                   "4",
+		"RELAYPROBE_MIN_SUCCESS_RATE":         "0.75",
+		"RELAYPROBE_MAX_REDIRECTS":            "1",
+		"RELAYPROBE_MAX_INPUT_BYTES":          "4096",
+		"RELAYPROBE_MAX_RESPONSE_BYTES":       "2048",
+		"RELAYPROBE_ALLOW_PRIVATE_TARGETS":    "true",
+		"RELAYPROBE_ALLOW_REMOTE_DNS":         "true",
+		"RELAYPROBE_RETRY_PERMANENT_FAILURES": "true",
+		"RELAYPROBE_STOP_ON_SUCCESS":          "true",
+		"RELAYPROBE_SAVE":                     "true",
+		"RELAYPROBE_TARGETS":                  "https://one.test/, http://two.test/",
+		"RELAYPROBE_ALLOWED_TARGET_HOSTS":     "one.test, two.test",
+		"RELAYPROBE_PROGRESS_INTERVAL":        "750ms",
+	}
+	for name, value := range values {
+		t.Setenv(name, value)
+	}
+	c, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Concurrency != 9 || c.QueueSize != 18 || c.PerTarget != 3 || c.RateLimit != 12.5 || c.Repeat != 4 || c.MinSuccessRate != 0.75 {
+		t.Fatalf("numeric environment not applied: %+v", c)
+	}
+	if c.MaxRedirects != 1 || c.MaxInputBytes != 4096 || c.MaxResponseBytes != 2048 || c.ProgressInterval != 750*time.Millisecond {
+		t.Fatalf("limits not applied: %+v", c)
+	}
+	if !c.AllowPrivate || !c.AllowRemoteDNS || !c.RetryPermanent || !c.StopOnSuccess || !c.Save {
+		t.Fatalf("boolean environment not applied: %+v", c)
+	}
+	if len(c.Targets) != 2 || c.Targets[1] != "http://two.test/" || len(c.AllowedHosts) != 2 {
+		t.Fatalf("lists not applied: targets=%v allowed=%v", c.Targets, c.AllowedHosts)
+	}
+}
+
+func TestRejectsInvalidBooleanEnvironment(t *testing.T) {
+	t.Setenv("RELAYPROBE_ALLOW_REMOTE_DNS", "sometimes")
+	if _, err := Load(""); err == nil || !strings.Contains(err.Error(), "RELAYPROBE_ALLOW_REMOTE_DNS") {
+		t.Fatalf("err=%v", err)
 	}
 }

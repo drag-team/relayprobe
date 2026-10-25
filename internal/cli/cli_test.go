@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"compress/gzip"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -70,14 +72,17 @@ func TestShellCompletions(t *testing.T) {
 
 func TestConfigInitDoesNotOverwrite(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.json")
-	if code, _, diag := run([]string{"config", "init", "--config", p}, ""); code != ExitOK {
-		t.Fatalf("%d %s", code, diag)
+	if code, out, diag := run([]string{"config", "init", "--config", p}, ""); code != ExitOK || out != p+"\n" {
+		t.Fatalf("%d out=%q diag=%s", code, out, diag)
 	}
 	if info, err := os.Stat(p); err != nil || info.Mode().Perm() != 0600 {
 		t.Fatalf("mode=%v err=%v", info, err)
 	}
 	if code, _, _ := run([]string{"config", "init", "--config", p}, ""); code != ExitOperational {
 		t.Fatalf("overwrite code=%d", code)
+	}
+	if code, out, diag := run([]string{"config", "init", "--config", p, "--force"}, ""); code != ExitOK || out != p+"\n" {
+		t.Fatalf("force code=%d out=%q diag=%s", code, out, diag)
 	}
 	if code, _, _ := run([]string{"config", "validate", "--config", p}, ""); code != ExitOK {
 		t.Fatalf("validate code=%d", code)
@@ -206,6 +211,23 @@ func TestExecutionProfilesAndOverrides(t *testing.T) {
 	}
 }
 
+func TestExplicitFalseBooleanOverridesEnvironmentAndProfile(t *testing.T) {
+	t.Setenv("RELAYPROBE_ALLOW_REMOTE_DNS", "true")
+	t.Setenv("RELAYPROBE_SAVE", "true")
+	o := checkOptions{
+		profile: "fast", protocol: "http", format: "table", inputFormat: "text",
+		color: "never", rate: -1, maxRedirects: -1,
+		explicit: map[string]bool{"allow-remote-dns": true, "save": true, "stop-on-success": true},
+	}
+	cfg, _, _, _, err := (CLI{}).loadCheck(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AllowRemoteDNS || cfg.Save || cfg.StopOnSuccess {
+		t.Fatalf("explicit false values did not override configuration: %+v", cfg)
+	}
+}
+
 func TestSecureWorkingOutput(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "working.txt")
 	out, err := openSecureOutput(path, false)
@@ -275,5 +297,82 @@ func TestNoValidInputDoesNotReplaceWorkingOutput(t *testing.T) {
 	b, err := os.ReadFile(path)
 	if err != nil || string(b) != "old\n" {
 		t.Fatalf("existing output changed: %q %v", b, err)
+	}
+}
+
+func TestSummaryOutputRequireCountAndAtomicPreservation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "summary.json")
+	args := []string{"check", "--target", "http://127.0.0.1/", "--quiet", "--summary-output", path, "--require-count", "1"}
+	code, _, diag := run(args, "proxy.test:8080\n")
+	if code != ExitNoSuccess || !strings.Contains(diag, "saved run summary") {
+		t.Fatalf("code=%d diag=%q", code, diag)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var summary model.RunSummary
+	if err := json.Unmarshal(b, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary.Processed != 1 || summary.Successful != 0 || summary.StatusCount[model.StatusPolicyBlock] != 1 {
+		t.Fatalf("summary=%+v", summary)
+	}
+	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("mode=%v err=%v", info, err)
+	}
+	if code, _, _ := run(args, "proxy.test:8080\n"); code != ExitOperational {
+		t.Fatalf("existing summary code=%d", code)
+	}
+	before := append([]byte(nil), b...)
+	forceArgs := []string{"check", "--quiet", "--summary-output", path, "--force"}
+	if code, _, _ := run(forceArgs, "invalid\n"); code != ExitNoValidInput {
+		t.Fatalf("no-input code=%d", code)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("summary changed after incomplete run: err=%v", err)
+	}
+	if code, _, _ := run([]string{"check", "--require-count=-1"}, ""); code != ExitUsage {
+		t.Fatalf("negative require-count code=%d", code)
+	}
+}
+
+func TestGzipImportAndCanonicalPaths(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "proxies.csv.gz")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := gzip.NewWriter(f)
+	if _, err := zw.Write([]byte("host,port\nproxy.test,8080\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	code, out, diag := run([]string{"import", path}, "")
+	if code != ExitOK || out != "http://proxy.test:8080\n" {
+		t.Fatalf("code=%d out=%q diag=%q", code, out, diag)
+	}
+	aliasRoot := t.TempDir()
+	alias := filepath.Join(aliasRoot, "data")
+	if err := os.Symlink(dir, alias); err != nil {
+		t.Fatal(err)
+	}
+	plain := filepath.Join(dir, "plain.txt")
+	if err := os.WriteFile(plain, []byte("proxy.test:80\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	same, err := samePath(plain, filepath.Join(alias, "plain.txt"))
+	if err != nil || !same {
+		t.Fatalf("same=%v err=%v", same, err)
+	}
+	if _, err := canonicalPath(filepath.Join(alias, "new", "nested", "output.json")); err != nil {
+		t.Fatal(err)
 	}
 }

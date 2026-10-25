@@ -6,7 +6,7 @@ HTTP service, plugin execution, or downloaded code path.
 Data flow:
 
 ```text
-text / CSV / JSON
+text / CSV / JSON / gzip
         |
  streaming parser + hash deduplication
         |
@@ -45,6 +45,12 @@ strings. JSONL output writes directly through a streaming encoder. These keep
 allocation and resident-memory growth low on large datasets; exact
 deduplication can be disabled for constant parser state.
 
+Gzip is detected from stream magic bytes rather than trusted file extensions.
+The byte budget is shared across every input source and enforced on the
+decompressed stream, so additional files and compression cannot multiply the
+configured parser limit. Filename suffixes are used only to select the nested
+data format.
+
 Destination hostnames are exact-allowlisted, every returned address is checked,
 and the selected safe address is placed in CONNECT/SOCKS requests. HTTPS keeps
 the original hostname only for SNI and certificate validation. Each redirect is
@@ -59,6 +65,11 @@ enabled.
 Raw attempt observations are stored independently from the score. Score changes
 therefore do not destroy evidence. Latency summary quantiles use a fixed-memory
 1 ms histogram capped at the five-minute maximum attempt duration.
+
+Credential-bearing working lists and standalone JSON summaries share the same
+same-directory temporary-file, flush, synchronization, and atomic-commit path.
+Canonical path comparison resolves symbolic-link aliases before an output can
+replace an input.
 
 Qualification uses a configurable minimum success ratio. The checker computes
 the required success count before starting, stops when that count is reached in

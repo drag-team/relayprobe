@@ -36,3 +36,8 @@ proxy URIs and should be filtered by status when used as a working-proxy list.
 Run summaries contain `status_count`, `failure_codes`, and `failure_stages`.
 These maps count raw observations, so a finally successful proxy can still
 contribute an earlier failure. This preserves transient-error evidence.
+
+The same summary object is written by `--summary-output` and by optional run
+history. A standalone summary may have an empty `run_id` because no historical
+JSONL run was created. Consumers should use `schema_version`, not the presence
+of a run identifier, to select a decoder.

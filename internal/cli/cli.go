@@ -104,7 +104,7 @@ Commands:
 
 Run 'relayprobe <command> --help' for command options.
 Exit codes: 0 completed, 2 usage/config, 3 operational, 4 no valid input,
-5 no successful proxy (--require-success), 130 interrupted.
+5 validation threshold not met (--require-success/--require-count), 130 interrupted.
 `)
 	return ExitOK
 }
@@ -123,12 +123,15 @@ type checkOptions struct {
 	allowPrivate, allowRemoteDNS, save, requireSuccess, verbose bool
 	dataDir                                                     string
 	maxRedirects                                                int
+	requireCount                                                int
 	rate, minSuccessRate                                        float64
 	plain                                                       bool
 	workingOutput                                               string
+	summaryOutput                                               string
 	forceWorking                                                bool
 	noDeduplicate, retryPermanent, stopOnSuccess, quiet         bool
 	outputStatus                                                string
+	explicit                                                    map[string]bool
 }
 
 func (c CLI) newFlagSet(name string) (*flag.FlagSet, *bytesBuffer) {
@@ -182,11 +185,13 @@ func (c CLI) addCheckFlags(fs *flag.FlagSet, o *checkOptions) {
 	fs.BoolVar(&o.quiet, "quiet", false, "suppress per-proxy stdout; summaries and errors remain on stderr")
 	fs.StringVar(&o.outputStatus, "output-status", "all", "stdout results: all, ok, failed, timeout, auth_failed, policy_blocked, invalid, inconclusive, unreliable, interrupted")
 	fs.StringVar(&o.workingOutput, "working-output", "", "write validated proxies with credentials to a mode-0600 file")
-	fs.BoolVar(&o.forceWorking, "force", false, "replace an existing working-output file")
+	fs.StringVar(&o.summaryOutput, "summary-output", "", "atomically write the run summary as JSON")
+	fs.BoolVar(&o.forceWorking, "force", false, "replace an existing working or summary output file")
 	fs.BoolVar(&o.save, "save", false, "persist run results locally")
 	fs.StringVar(&o.dataDir, "data-dir", "", "history directory")
 	fs.IntVar(&o.maxRedirects, "max-redirects", -1, "safe redirects to follow (0..10)")
 	fs.BoolVar(&o.requireSuccess, "require-success", false, "exit 5 when no proxy validates")
+	fs.IntVar(&o.requireCount, "require-count", 0, "exit 5 unless at least this many proxies validate")
 	fs.BoolVar(&o.verbose, "verbose", false, "show rejected inputs and progress on stderr")
 }
 
@@ -240,20 +245,20 @@ func (c CLI) loadCheck(o checkOptions) (config.Config, model.Protocol, output.Fo
 	if o.maxRedirects >= 0 {
 		cfg.MaxRedirects = o.maxRedirects
 	}
-	if o.allowPrivate {
-		cfg.AllowPrivate = true
+	if o.allowPrivate || o.explicit["allow-private-targets"] {
+		cfg.AllowPrivate = o.allowPrivate
 	}
-	if o.allowRemoteDNS {
-		cfg.AllowRemoteDNS = true
+	if o.allowRemoteDNS || o.explicit["allow-remote-dns"] {
+		cfg.AllowRemoteDNS = o.allowRemoteDNS
 	}
-	if o.retryPermanent {
-		cfg.RetryPermanent = true
+	if o.retryPermanent || o.explicit["retry-permanent"] {
+		cfg.RetryPermanent = o.retryPermanent
 	}
-	if o.stopOnSuccess {
-		cfg.StopOnSuccess = true
+	if o.stopOnSuccess || o.explicit["stop-on-success"] {
+		cfg.StopOnSuccess = o.stopOnSuccess
 	}
-	if o.save {
-		cfg.Save = true
+	if o.save || o.explicit["save"] {
+		cfg.Save = o.save
 	}
 	if err := cfg.ParseDurations(); err != nil {
 		return cfg, "", "", false, err
@@ -356,7 +361,9 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 		return ExitOK
 	}
 	invalidZero := ""
+	o.explicit = make(map[string]bool)
 	fs.Visit(func(f *flag.Flag) {
+		o.explicit[f.Name] = true
 		switch f.Name {
 		case "concurrency", "queue-size", "per-target", "repeat", "min-success-rate":
 			if f.Value.String() == "0" {
@@ -367,6 +374,13 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 	if invalidZero != "" {
 		fmt.Fprintf(c.Stderr, "%s must be greater than zero\n", invalidZero)
 		return ExitUsage
+	}
+	if o.requireCount < 0 || o.requireCount > 1_000_000_000 {
+		fmt.Fprintln(c.Stderr, "require-count must be between 0 and 1000000000")
+		return ExitUsage
+	}
+	if o.requireSuccess && o.requireCount < 1 {
+		o.requireCount = 1
 	}
 	cfg, proto, outFmt, color, err := c.loadCheck(o)
 	if err != nil {
@@ -387,6 +401,7 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 	statsCh := make(chan model.InputStats, 1)
 	files := fs.Args()
 	var working *secureOutput
+	var summaryOutput *secureOutput
 	if o.workingOutput != "" {
 		for _, name := range files {
 			same, sameErr := samePath(name, o.workingOutput)
@@ -405,6 +420,36 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 			return ExitOperational
 		}
 		defer working.Abort()
+	}
+	if o.summaryOutput != "" {
+		for _, name := range files {
+			same, sameErr := samePath(name, o.summaryOutput)
+			if sameErr != nil {
+				fmt.Fprintln(c.Stderr, "summary output error:", sameErr)
+				return ExitUsage
+			}
+			if same {
+				fmt.Fprintln(c.Stderr, "summary output must not overwrite an input file")
+				return ExitUsage
+			}
+		}
+		if o.workingOutput != "" {
+			same, sameErr := samePath(o.workingOutput, o.summaryOutput)
+			if sameErr != nil {
+				fmt.Fprintln(c.Stderr, "summary output error:", sameErr)
+				return ExitUsage
+			}
+			if same {
+				fmt.Fprintln(c.Stderr, "summary output and working output must be different files")
+				return ExitUsage
+			}
+		}
+		summaryOutput, err = openSecureOutput(o.summaryOutput, o.forceWorking)
+		if err != nil {
+			fmt.Fprintln(c.Stderr, "summary output error:", err)
+			return ExitOperational
+		}
+		defer summaryOutput.Abort()
 	}
 	go func() {
 		defer close(jobs)
@@ -436,7 +481,7 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 		}
 		var e error
 		if len(files) == 0 {
-			e = parser.EmitSource(c.Stdin, format, "stdin", emit, reject)
+			e = emitInputSource(parser, c.Stdin, format, "stdin", emit, reject)
 		} else {
 			for _, name := range files {
 				f, openErr := os.Open(name)
@@ -444,7 +489,7 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 					e = openErr
 					break
 				}
-				e = parser.EmitSource(f, format, name, emit, reject)
+				e = emitInputSource(parser, f, format, name, emit, reject)
 				_ = f.Close()
 				if e != nil {
 					break
@@ -603,6 +648,17 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 		}
 		fmt.Fprintf(c.Stderr, "saved run %s\n", history.ID)
 	}
+	if summaryOutput != nil {
+		if err := summaryOutput.WriteJSON(summary); err != nil {
+			fmt.Fprintln(c.Stderr, "summary output error:", err)
+			return ExitOperational
+		}
+		if err := summaryOutput.Commit(); err != nil {
+			fmt.Fprintln(c.Stderr, "summary output error:", err)
+			return ExitOperational
+		}
+		fmt.Fprintf(c.Stderr, "saved run summary to %s\n", o.summaryOutput)
+	}
 	if working != nil {
 		if err := working.Commit(); err != nil {
 			fmt.Fprintln(c.Stderr, "working output error:", err)
@@ -616,7 +672,7 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 			fmt.Fprintln(c.Stderr, "top_failures="+top)
 		}
 	}
-	if o.requireSuccess && summary.Successful == 0 {
+	if summary.Successful < o.requireCount {
 		return ExitNoSuccess
 	}
 	return ExitOK
@@ -735,13 +791,14 @@ func openSecureOutput(path string, force bool) (*secureOutput, error) {
 	}
 	if err = f.Chmod(0600); err != nil {
 		_ = f.Close()
+		_ = os.Remove(f.Name())
 		return nil, err
 	}
 	return &secureOutput{f: f, w: bufio.NewWriterSize(f, 64<<10), temp: f.Name(), final: path, force: force}, nil
 }
 func (s *secureOutput) WriteLine(value string) error {
 	if s == nil || s.closed {
-		return errors.New("working output is closed")
+		return errors.New("output is closed")
 	}
 	if strings.ContainsAny(value, "\r\n") {
 		return errors.New("unsafe proxy value")
@@ -749,9 +806,24 @@ func (s *secureOutput) WriteLine(value string) error {
 	_, err := fmt.Fprintln(s.w, value)
 	return err
 }
+func (s *secureOutput) WriteJSON(value any) error {
+	if s == nil || s.closed {
+		return errors.New("output is closed")
+	}
+	enc := json.NewEncoder(s.w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(value)
+}
+func (s *secureOutput) WriteBytes(value []byte) error {
+	if s == nil || s.closed {
+		return errors.New("output is closed")
+	}
+	_, err := s.w.Write(value)
+	return err
+}
 func (s *secureOutput) Commit() error {
 	if s == nil || s.closed {
-		return errors.New("working output is already closed")
+		return errors.New("output is already closed")
 	}
 	s.closed = true
 	if err := s.w.Flush(); err != nil {
@@ -799,15 +871,42 @@ func (s *secureOutput) Abort() {
 	_ = os.Remove(s.temp)
 }
 func samePath(a, b string) (bool, error) {
-	aa, err := filepath.Abs(a)
+	aa, err := canonicalPath(a)
 	if err != nil {
 		return false, err
 	}
-	bb, err := filepath.Abs(b)
+	bb, err := canonicalPath(b)
 	if err != nil {
 		return false, err
 	}
 	return aa == bb, nil
+}
+
+func canonicalPath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	current := abs
+	missing := []string{}
+	for {
+		resolved, resolveErr := filepath.EvalSymlinks(current)
+		if resolveErr == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missing[i])
+			}
+			return resolved, nil
+		}
+		if !errors.Is(resolveErr, os.ErrNotExist) {
+			return "", resolveErr
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", resolveErr
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
 }
 
 func (c CLI) inspect(args []string) int {
@@ -871,7 +970,7 @@ func (c CLI) importCmd(args []string) int {
 	}
 	var e error
 	if len(fs.Args()) == 0 {
-		e = parser.EmitSource(c.Stdin, parsedInputFormat, "stdin", emit, nil)
+		e = emitInputSource(parser, c.Stdin, parsedInputFormat, "stdin", emit, nil)
 	} else {
 		for _, n := range fs.Args() {
 			f, er := os.Open(n)
@@ -879,7 +978,7 @@ func (c CLI) importCmd(args []string) int {
 				e = er
 				break
 			}
-			e = parser.EmitSource(f, parsedInputFormat, n, emit, nil)
+			e = emitInputSource(parser, f, parsedInputFormat, n, emit, nil)
 			_ = f.Close()
 			if e != nil {
 				break
@@ -898,6 +997,17 @@ func (c CLI) importCmd(args []string) int {
 		return ExitNoValidInput
 	}
 	return ExitOK
+}
+
+func emitInputSource(parser *inputpkg.Parser, reader io.Reader, format inputpkg.Format, source string, emit func(model.Proxy) error, reject func(inputpkg.Rejection)) error {
+	reader, compressed, err := inputpkg.MaybeDecompress(reader)
+	if err != nil {
+		return err
+	}
+	if compressed != nil {
+		defer compressed.Close()
+	}
+	return parser.EmitSource(reader, format, source, emit, reject)
 }
 
 type resultFilter struct {
@@ -1216,27 +1326,18 @@ func (c CLI) configCmd(args []string) int {
 		if *path == "" {
 			*path = filepath.Join(config.Defaults().DataDir, "config.json")
 		}
-		if err := os.MkdirAll(filepath.Dir(*path), 0700); err != nil {
-			fmt.Fprintln(c.Stderr, err)
-			return ExitOperational
-		}
-		b, _ := config.Defaults().MarshalJSON()
-		flags := os.O_CREATE | os.O_WRONLY | os.O_EXCL
-		if *force {
-			flags = os.O_CREATE | os.O_TRUNC | os.O_WRONLY
-		}
-		f, openErr := os.OpenFile(*path, flags, 0600)
+		output, openErr := openSecureOutput(*path, *force)
 		if openErr != nil {
 			fmt.Fprintln(c.Stderr, openErr)
 			return ExitOperational
 		}
-		_, writeErr := f.Write(append(b, '\n'))
-		closeErr := f.Close()
-		if writeErr != nil || closeErr != nil {
-			err := writeErr
-			if err == nil {
-				err = closeErr
-			}
+		defer output.Abort()
+		b, _ := config.Defaults().MarshalJSON()
+		if err := output.WriteBytes(append(b, '\n')); err != nil {
+			fmt.Fprintln(c.Stderr, err)
+			return ExitOperational
+		}
+		if err := output.Commit(); err != nil {
 			fmt.Fprintln(c.Stderr, err)
 			return ExitOperational
 		}
@@ -1308,7 +1409,7 @@ func (c CLI) completion(args []string) int {
 		return ExitUsage
 	}
 	commands := "check inspect import results runs export stats config doctor bench completion version help"
-	checkFlags := "--profile --format --input-format --protocol --concurrency --queue-size --per-target --rate --repeat --min-success-rate --connect-timeout --request-timeout --dns-cache-ttl --retry-backoff --progress-interval --target --allow-host --allow-private-targets --allow-remote-dns --retry-permanent --stop-on-success --no-deduplicate --quiet --output-status --working-output --force --save --data-dir --max-redirects --require-success --verbose --plain --color --config --help"
+	checkFlags := "--profile --format --input-format --protocol --concurrency --queue-size --per-target --rate --repeat --min-success-rate --connect-timeout --request-timeout --dns-cache-ttl --retry-backoff --progress-interval --target --allow-host --allow-private-targets --allow-remote-dns --retry-permanent --stop-on-success --no-deduplicate --quiet --output-status --working-output --summary-output --force --save --data-dir --max-redirects --require-success --require-count --verbose --plain --color --config --help"
 	switch args[0] {
 	case "bash":
 		fmt.Fprintf(c.Stdout, `_relayprobe() {

@@ -1,6 +1,6 @@
 BINARY := bin/relayprobe
 PREFIX ?= $(HOME)/.local
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || printf 0.4.0-dev)
+VERSION ?= 0.5.0-dev
 COMMIT ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || printf unknown)
 BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 MODULE := github.com/drag-team/relayprobe
