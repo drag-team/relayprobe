@@ -5,10 +5,33 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+          cache: false
+      - name: Validate release metadata
+        run: |
+          [[ "${GITHUB_REF_NAME}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          version="${GITHUB_REF_NAME#v}"
+          test "${GITHUB_REF_NAME}" = "v${version}"
+          test "$(cat VERSION)" = "${version}"
+          grep -Fq "## [${version}]" CHANGELOG.md
+          git cat-file -t "${GITHUB_REF_NAME}" | grep -qx tag
+          test "$(git rev-parse HEAD)" = "$(git rev-list -n 1 "${GITHUB_REF_NAME}")"
+      - name: Verify source
+        run: make check
   build:
+    needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -21,20 +44,20 @@ jobs:
         with:
           go-version: "1.24.x"
           cache: false
-      - name: Test
-        run: make test
       - name: Build archive
         env:
           ARCH: ${{ matrix.arch }}
           VERSION: ${{ github.ref_name }}
           COMMIT: ${{ github.sha }}
         run: |
+          version="${VERSION#v}"
           package="relayprobe-${VERSION}-linux-${ARCH}"
           mkdir -p "dist/${package}"
-          CGO_ENABLED=0 GOOS=linux GOARCH="${ARCH}" go build -trimpath -ldflags "-s -w -X github.com/drag-team/relayprobe/internal/buildinfo.Version=${VERSION} -X github.com/drag-team/relayprobe/internal/buildinfo.Commit=${COMMIT} -X github.com/drag-team/relayprobe/internal/buildinfo.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "dist/${package}/relayprobe" ./cmd/relayprobe
+          CGO_ENABLED=0 GOOS=linux GOARCH="${ARCH}" go build -trimpath -ldflags "-s -w -X github.com/drag-team/relayprobe/internal/buildinfo.Version=${version} -X github.com/drag-team/relayprobe/internal/buildinfo.Commit=${COMMIT} -X github.com/drag-team/relayprobe/internal/buildinfo.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "dist/${package}/relayprobe" ./cmd/relayprobe
           cp README.md LICENSE CHANGELOG.md "dist/${package}/"
           tar -C dist -czf "dist/${package}.tar.gz" "${package}"
-          sha256sum "dist/${package}.tar.gz" > "dist/${package}.tar.gz.sha256"
+          cd dist
+          sha256sum "${package}.tar.gz" > "${package}.tar.gz.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: relayprobe-linux-${{ matrix.arch }}
@@ -46,6 +69,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:

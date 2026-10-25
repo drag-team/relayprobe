@@ -3,6 +3,7 @@
 RelayProbe releases are created from annotated Semantic Versioning tags on a
 clean `main` branch. The release workflow builds static Linux amd64 and arm64
 archives, generates SHA-256 checksum files, and publishes them to GitHub.
+`VERSION`, the changelog section, and the tag must agree exactly.
 
 ## Prepare
 
@@ -17,18 +18,23 @@ make build
 git status --short
 ```
 
-Move the relevant entries from `Unreleased` to a dated version section in
-`CHANGELOG.md`. Confirm that release notes do not contain proxy credentials,
-private targets, local paths, or unpublished vulnerability details.
+Choose the stable version, remove its `-dev` suffix from `VERSION`, and move the
+relevant entries from `Unreleased` to a dated version section in `CHANGELOG.md`.
+Confirm that release notes do not contain proxy credentials, private targets,
+local paths, or unpublished vulnerability details. Commit and push that release
+preparation before tagging it.
 
 ## Tag
 
-Create an annotated tag only after the release commit has passed CI:
+Create an annotated tag only after the release commit has passed CI. The
+following example uses `0.6.0`; replace it with the version in `VERSION`:
 
 ```sh
-git tag -a v0.4.0 -m "RelayProbe v0.4.0"
+version="$(cat VERSION)"
+git tag -a "v${version}" -m "RelayProbe v${version}"
+make release-check
 git push origin main
-git push origin v0.4.0
+git push origin "v${version}"
 ```
 
 The pushed tag triggers `.github/workflows/release.yml`. A failed workflow must
@@ -40,10 +46,11 @@ unverified working tree.
 Download each archive and its checksum onto a clean Linux host:
 
 ```sh
-sha256sum --check relayprobe-v0.4.0-linux-amd64.tar.gz.sha256
-tar -xzf relayprobe-v0.4.0-linux-amd64.tar.gz
-./relayprobe-v0.4.0-linux-amd64/relayprobe version
-./relayprobe-v0.4.0-linux-amd64/relayprobe doctor
+version="0.6.0"
+sha256sum --check "relayprobe-v${version}-linux-amd64.tar.gz.sha256"
+tar -xzf "relayprobe-v${version}-linux-amd64.tar.gz"
+./"relayprobe-v${version}-linux-amd64"/relayprobe version
+./"relayprobe-v${version}-linux-amd64"/relayprobe doctor
 ```
 
 Confirm the embedded version, commit, target architecture, license, README, and

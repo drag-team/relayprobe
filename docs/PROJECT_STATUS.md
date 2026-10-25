@@ -10,8 +10,9 @@ a streaming parser, bounded worker engine, destination policy, protocol
 connectors, evidence model, local metadata lookup, optional JSONL history, and
 human or machine output.
 
-The development line is `0.6.0-dev`; result schema version 4 is current. The
-project is in active development and the implemented command surface is usable.
+The development line is `0.6.0-dev`; the latest published tag is `v0.4.0`, and
+result schema version 4 is current. The project is in active development and
+the implemented command surface is usable.
 It is not represented as a completed independent security audit.
 
 ## Verified capabilities

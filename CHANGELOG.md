@@ -24,6 +24,7 @@ All notable changes to RelayProbe are documented in this file. The project uses
 - Offline longest-prefix country, city, ASN, organization, and network-type metadata.
 - Score, throughput, country, ASN, and network-type result/export filters.
 - Explicit `-` standard-input sources for check and import pipelines.
+- Canonical version file, documented release locations, and hardened release validation.
 
 ### Changed
 

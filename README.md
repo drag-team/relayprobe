@@ -1,6 +1,7 @@
 # RelayProbe
 
 [![CI](https://github.com/drag-team/relayprobe/actions/workflows/ci.yml/badge.svg)](https://github.com/drag-team/relayprobe/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/drag-team/relayprobe?sort=semver)](https://github.com/drag-team/relayprobe/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Go version](https://img.shields.io/badge/Go-1.24%2B-00ADD8.svg)](go.mod)
 
@@ -30,6 +31,12 @@ daemon, telemetry, or root requirement.
 ## Install
 
 RelayProbe requires Go 1.24 or newer when building from source.
+
+Stable Linux amd64 and arm64 archives and their SHA-256 files are published on
+the [GitHub Releases page](https://github.com/drag-team/relayprobe/releases).
+Source development on `main` may be newer than the latest release. See
+[versioning and releases](docs/VERSIONING.md) for the exact policy and use
+`relayprobe version` to identify any installed executable.
 
 ```sh
 git clone https://github.com/drag-team/relayprobe.git
@@ -316,6 +323,8 @@ relayprobe completion fish > ~/.config/fish/completions/relayprobe.fish
 - [Offline metadata](docs/METADATA.md)
 - [Benchmarks](docs/BENCHMARKS.md)
 - [Project status](docs/PROJECT_STATUS.md)
+- [Versioning and releases](docs/VERSIONING.md)
+- [Repository metadata](docs/REPOSITORY.md)
 - [Release process](docs/RELEASING.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security reporting](SECURITY.md)
