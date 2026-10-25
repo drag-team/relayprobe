@@ -23,7 +23,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: github/codeql-action/init@v3
+      - uses: github/codeql-action/init@v4
         with:
           languages: go
       - uses: actions/setup-go@v5
@@ -31,4 +31,4 @@ jobs:
           go-version: stable
           cache: false
       - run: make build
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/analyze@v4
