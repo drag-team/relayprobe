@@ -1,0 +1,33 @@
+name: Feature request
+description: Propose a focused RelayProbe improvement
+title: "feature: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Operational problem
+      description: Explain the user need without prescribing an implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Include the expected CLI and output behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Security and resource impact
+      description: Address destination safety, credentials, network load, CPU, memory, and compatibility.
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification strategy
+      description: Describe controlled tests and measurable acceptance criteria.
+    validations:
+      required: true

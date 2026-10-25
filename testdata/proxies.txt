@@ -1,0 +1,5 @@
+# Safe parser fixture; documentation-range addresses are proxy inputs, not targets.
+http://192.0.2.10:8080
+socks4://192.0.2.11:1080
+socks5://example-user:example-password@192.0.2.12:1080
+bad input

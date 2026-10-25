@@ -1,0 +1,9 @@
+* text=auto eol=lf
+*.go text diff=golang
+*.md text diff=markdown
+*.sh text eol=lf
+*.bat text eol=crlf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary

@@ -1,0 +1,15 @@
+/bin/
+/dist/
+/.relayprobe/
+/*.txt
+*.part
+*.out
+*.prof
+coverage*.txt
+coverage*.xml
+relayprobe-results*.jsonl
+*.summary.json
+working*.txt
+.DS_Store
+.idea/
+.vscode/

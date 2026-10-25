@@ -1,0 +1,56 @@
+name: Bug report
+description: Report reproducible incorrect behavior in RelayProbe
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Remove credentials, private endpoints, target tokens, and unrelated environment data before submitting. Report vulnerabilities through the Security tab.
+  - type: input
+    id: version
+    attributes:
+      label: RelayProbe version
+      description: Paste the output of `relayprobe version`.
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: Operating system, architecture, and terminal or CI environment.
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Sanitized command
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Observed behavior
+      description: Include sanitized stdout, stderr, and exit code.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Use controlled fixtures or documentation addresses, never third-party credentials.
+    validations:
+      required: true
+  - type: checkboxes
+    id: authorization
+    attributes:
+      label: Authorization
+      options:
+        - label: I used only proxy endpoints and targets I am authorized to test.
+          required: true
