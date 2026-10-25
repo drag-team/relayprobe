@@ -24,6 +24,7 @@ import (
 	"github.com/drag-team/relayprobe/internal/config"
 	"github.com/drag-team/relayprobe/internal/engine"
 	inputpkg "github.com/drag-team/relayprobe/internal/input"
+	metadatapkg "github.com/drag-team/relayprobe/internal/metadata"
 	"github.com/drag-team/relayprobe/internal/metrics"
 	"github.com/drag-team/relayprobe/internal/model"
 	"github.com/drag-team/relayprobe/internal/output"
@@ -119,12 +120,14 @@ type checkOptions struct {
 	concurrency, queueSize, perTarget, repeat                   int
 	connectTimeout, requestTimeout, dnsCacheTTL, retryBackoff   string
 	progressInterval                                            string
-	targets, allowHosts                                         stringsFlag
+	targets, allowHosts, requireText, rejectText, expectJSON    stringsFlag
 	allowPrivate, allowRemoteDNS, save, requireSuccess, verbose bool
 	dataDir                                                     string
 	maxRedirects                                                int
 	requireCount                                                int
-	rate, minSuccessRate                                        float64
+	minResponseBytes                                            int64
+	rate, minSuccessRate, minThroughput                         float64
+	baselineIP, metadataFile                                    string
 	plain                                                       bool
 	workingOutput                                               string
 	summaryOutput                                               string
@@ -161,7 +164,7 @@ func (c CLI) addCheckFlags(fs *flag.FlagSet, o *checkOptions) {
 	fs.StringVar(&o.profile, "profile", "", "execution profile: fast, balanced, thorough")
 	fs.StringVar(&o.format, "format", "table", "output: table, jsonl, csv, txt")
 	fs.StringVar(&o.inputFormat, "input-format", "auto", "input: auto, text, csv, json, jsonl")
-	fs.StringVar(&o.protocol, "protocol", "http", "default protocol: http, socks4, socks4a, socks5, auto")
+	fs.StringVar(&o.protocol, "protocol", "http", "default protocol: http, https, socks4, socks4a, socks5, auto")
 	fs.StringVar(&o.color, "color", "auto", "color: auto, always, never")
 	fs.BoolVar(&o.plain, "plain", false, "disable ANSI styling for plain terminal output")
 	fs.IntVar(&o.concurrency, "concurrency", 0, "global concurrency (1..4096)")
@@ -170,6 +173,13 @@ func (c CLI) addCheckFlags(fs *flag.FlagSet, o *checkOptions) {
 	fs.Float64Var(&o.rate, "rate", -1, "maximum validation attempts per second; 0 disables")
 	fs.IntVar(&o.repeat, "repeat", 0, "measurements per proxy (1..20)")
 	fs.Float64Var(&o.minSuccessRate, "min-success-rate", -1, "minimum successful measurement ratio (0..1]")
+	fs.Int64Var(&o.minResponseBytes, "min-response-bytes", -1, "minimum response body size for a successful measurement")
+	fs.Float64Var(&o.minThroughput, "min-throughput-kbps", -1, "minimum measured response-body throughput in decimal KB/s")
+	fs.Var(&o.requireText, "require-text", "case-insensitive response substring required for success (repeatable)")
+	fs.Var(&o.rejectText, "reject-text", "case-insensitive response substring that fails validation (repeatable)")
+	fs.Var(&o.expectJSON, "expect-json", "required dot.path=value JSON assertion (repeatable)")
+	fs.StringVar(&o.baselineIP, "baseline-ip", "", "local public IP used for evidence-based anonymity classification")
+	fs.StringVar(&o.metadataFile, "metadata-file", "", "offline exit-IP metadata CSV or CSV.gz database")
 	fs.StringVar(&o.connectTimeout, "connect-timeout", "", "TCP connect timeout")
 	fs.StringVar(&o.requestTimeout, "request-timeout", "", "overall attempt timeout")
 	fs.StringVar(&o.dnsCacheTTL, "dns-cache-ttl", "", "cache approved target DNS answers (0 disables)")
@@ -220,6 +230,27 @@ func (c CLI) loadCheck(o checkOptions) (config.Config, model.Protocol, output.Fo
 	}
 	if o.minSuccessRate != -1 && o.minSuccessRate != 0 {
 		cfg.MinSuccessRate = o.minSuccessRate
+	}
+	if o.minResponseBytes > 0 || o.explicit["min-response-bytes"] {
+		cfg.MinResponseBytes = o.minResponseBytes
+	}
+	if o.minThroughput > 0 || o.explicit["min-throughput-kbps"] {
+		cfg.MinThroughputKBPS = o.minThroughput
+	}
+	if len(o.requireText) > 0 {
+		cfg.RequireText = append([]string(nil), o.requireText...)
+	}
+	if len(o.rejectText) > 0 {
+		cfg.RejectText = append([]string(nil), o.rejectText...)
+	}
+	if len(o.expectJSON) > 0 {
+		cfg.ExpectJSON = append([]string(nil), o.expectJSON...)
+	}
+	if o.baselineIP != "" || o.explicit["baseline-ip"] {
+		cfg.AnonymityBaseline = o.baselineIP
+	}
+	if o.metadataFile != "" || o.explicit["metadata-file"] {
+		cfg.MetadataFile = o.metadataFile
 	}
 	if o.connectTimeout != "" {
 		cfg.ConnectTimeoutRaw = o.connectTimeout
@@ -392,6 +423,17 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 		fmt.Fprintln(c.Stderr, formatErr)
 		return ExitUsage
 	}
+	var metadataProvider *metadatapkg.Provider
+	if cfg.MetadataFile != "" {
+		metadataProvider, err = metadatapkg.LoadCSV(cfg.MetadataFile)
+		if err != nil {
+			fmt.Fprintln(c.Stderr, "metadata error:", err)
+			return ExitUsage
+		}
+		if o.verbose {
+			fmt.Fprintf(c.Stderr, "loaded %d metadata prefixes\n", metadataProvider.Records())
+		}
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	jobs := make(chan model.Proxy, cfg.QueueSize)
@@ -400,10 +442,23 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 	parseErr := make(chan error, 1)
 	statsCh := make(chan model.InputStats, 1)
 	files := fs.Args()
+	stdinSources := 0
+	for _, name := range files {
+		if name == "-" {
+			stdinSources++
+		}
+	}
+	if stdinSources > 1 {
+		fmt.Fprintln(c.Stderr, "standard input may be specified only once")
+		return ExitUsage
+	}
 	var working *secureOutput
 	var summaryOutput *secureOutput
 	if o.workingOutput != "" {
 		for _, name := range files {
+			if name == "-" {
+				continue
+			}
 			same, sameErr := samePath(name, o.workingOutput)
 			if sameErr != nil {
 				fmt.Fprintln(c.Stderr, "working output error:", sameErr)
@@ -423,6 +478,9 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 	}
 	if o.summaryOutput != "" {
 		for _, name := range files {
+			if name == "-" {
+				continue
+			}
 			same, sameErr := samePath(name, o.summaryOutput)
 			if sameErr != nil {
 				fmt.Fprintln(c.Stderr, "summary output error:", sameErr)
@@ -484,6 +542,13 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 			e = emitInputSource(parser, c.Stdin, format, "stdin", emit, reject)
 		} else {
 			for _, name := range files {
+				if name == "-" {
+					e = emitInputSource(parser, c.Stdin, format, "stdin", emit, reject)
+					if e != nil {
+						break
+					}
+					continue
+				}
 				f, openErr := os.Open(name)
 				if openErr != nil {
 					e = openErr
@@ -500,6 +565,7 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 		parseErr <- e
 	}()
 	checker := engine.NewChecker(cfg)
+	checker.Metadata = metadataProvider
 	runner := engine.Engine{Workers: cfg.Concurrency, QueueSize: cfg.QueueSize, Processor: checker}
 	results := runner.Run(ctx, jobs)
 	writer := output.New(c.Stdout, outFmt, color)
@@ -697,7 +763,10 @@ func runConfiguration(cfg config.Config, proto model.Protocol, o checkOptions) m
 		Repeat: cfg.Repeat, MinSuccessRate: cfg.MinSuccessRate, ConnectTimeout: cfg.ConnectTimeout.String(), RequestTimeout: cfg.RequestTimeout.String(),
 		RetryBackoff: cfg.RetryBackoff.String(), StopOnSuccess: cfg.StopOnSuccess,
 		RetryPermanent: cfg.RetryPermanent, AllowRemoteDNS: cfg.AllowRemoteDNS,
-		Deduplicate: !o.noDeduplicate, ValidationTarget: targets,
+		MinResponseBytes: cfg.MinResponseBytes, MinThroughput: cfg.MinThroughputKBPS,
+		ContentRules:    len(cfg.RequireText) + len(cfg.RejectText) + len(cfg.ExpectJSON),
+		MetadataEnabled: cfg.MetadataFile != "",
+		Deduplicate:     !o.noDeduplicate, ValidationTarget: targets,
 	}
 }
 
@@ -820,6 +889,12 @@ func (s *secureOutput) WriteBytes(value []byte) error {
 	}
 	_, err := s.w.Write(value)
 	return err
+}
+func (s *secureOutput) Write(value []byte) (int, error) {
+	if s == nil || s.closed {
+		return 0, errors.New("output is closed")
+	}
+	return s.w.Write(value)
 }
 func (s *secureOutput) Commit() error {
 	if s == nil || s.closed {
@@ -957,6 +1032,16 @@ func (c CLI) importCmd(args []string) int {
 		fmt.Fprintln(c.Stderr, err)
 		return ExitUsage
 	}
+	stdinSources := 0
+	for _, name := range fs.Args() {
+		if name == "-" {
+			stdinSources++
+		}
+	}
+	if stdinSources > 1 {
+		fmt.Fprintln(c.Stderr, "standard input may be specified only once")
+		return ExitUsage
+	}
 	parser := inputpkg.New(inputpkg.Options{Format: parsedInputFormat, DefaultProtocol: p, Source: "input", MaxBytes: *max, Deduplicate: !*noDeduplicate})
 	emit := func(x model.Proxy) error {
 		if *outFmt == "jsonl" {
@@ -973,6 +1058,13 @@ func (c CLI) importCmd(args []string) int {
 		e = emitInputSource(parser, c.Stdin, parsedInputFormat, "stdin", emit, nil)
 	} else {
 		for _, n := range fs.Args() {
+			if n == "-" {
+				e = emitInputSource(parser, c.Stdin, parsedInputFormat, "stdin", emit, nil)
+				if e != nil {
+					break
+				}
+				continue
+			}
 			f, er := os.Open(n)
 			if er != nil {
 				e = er
@@ -1012,7 +1104,8 @@ func emitInputSource(parser *inputpkg.Parser, reader io.Reader, format inputpkg.
 
 type resultFilter struct {
 	status, protocol, search, exitIP, anonymity string
-	maxLatency                                  float64
+	country, asn, networkType                   string
+	maxLatency, minScore, minThroughput         float64
 }
 
 func matchResult(r model.Result, f resultFilter) bool {
@@ -1025,10 +1118,16 @@ func matchResult(r model.Result, f resultFilter) bool {
 	if f.search != "" && !strings.Contains(strings.ToLower(r.Endpoint), strings.ToLower(f.search)) {
 		return false
 	}
-	if f.exitIP != "" || f.anonymity != "" {
+	if f.exitIP != "" || f.anonymity != "" || f.country != "" || f.asn != "" || f.networkType != "" {
 		matched := false
 		for _, o := range r.Observations {
-			if (f.exitIP == "" || o.ExitIP == f.exitIP) && (f.anonymity == "" || o.Anonymity == f.anonymity) {
+			metadataMatches := f.country == "" && f.asn == "" && f.networkType == ""
+			if o.Metadata != nil {
+				metadataMatches = (f.country == "" || strings.EqualFold(o.Metadata.CountryCode, f.country) || strings.EqualFold(o.Metadata.Country, f.country)) &&
+					(f.asn == "" || strings.EqualFold(o.Metadata.ASN, normalizeASNFilter(f.asn))) &&
+					(f.networkType == "" || strings.EqualFold(o.Metadata.NetworkType, f.networkType))
+			}
+			if (f.exitIP == "" || o.ExitIP == f.exitIP) && (f.anonymity == "" || o.Anonymity == f.anonymity) && metadataMatches {
 				matched = true
 				break
 			}
@@ -1040,7 +1139,48 @@ func matchResult(r model.Result, f resultFilter) bool {
 	if f.maxLatency > 0 && (r.Successes == 0 || r.Score.MedianMS > f.maxLatency) {
 		return false
 	}
+	if f.minScore > 0 && (r.Score.Value == nil || *r.Score.Value < f.minScore) {
+		return false
+	}
+	if f.minThroughput > 0 {
+		matched := false
+		for _, observation := range r.Observations {
+			if observation.Status == model.StatusOK && observation.ThroughputKBPS >= f.minThroughput {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
 	return true
+}
+
+func normalizeASNFilter(value string) string {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	if value == "" || strings.HasPrefix(value, "AS") {
+		return value
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return value
+		}
+	}
+	return "AS" + value
+}
+
+func validateResultFilter(f resultFilter) error {
+	if math.IsNaN(f.maxLatency) || math.IsInf(f.maxLatency, 0) || f.maxLatency < 0 {
+		return errors.New("max-latency must be a finite non-negative number")
+	}
+	if math.IsNaN(f.minScore) || math.IsInf(f.minScore, 0) || f.minScore < 0 || f.minScore > 100 {
+		return errors.New("min-score must be between 0 and 100")
+	}
+	if math.IsNaN(f.minThroughput) || math.IsInf(f.minThroughput, 0) || f.minThroughput < 0 {
+		return errors.New("min-throughput-kbps must be a finite non-negative number")
+	}
+	return nil
 }
 
 func (c CLI) results(args []string) int {
@@ -1053,7 +1193,12 @@ func (c CLI) results(args []string) int {
 	search := fs.String("search", "", "endpoint substring")
 	exitIP := fs.String("exit-ip", "", "observed exit IP filter")
 	anonymity := fs.String("anonymity", "", "anonymity evidence filter")
+	country := fs.String("country", "", "country code or name filter")
+	asn := fs.String("asn", "", "ASN filter, for example AS15169 or 15169")
+	networkType := fs.String("network-type", "", "metadata network type filter")
 	lat := fs.Float64("max-latency", 0, "maximum median milliseconds")
+	minScore := fs.Float64("min-score", 0, "minimum score from 0 to 100")
+	minThroughput := fs.Float64("min-throughput-kbps", 0, "minimum observed response throughput")
 	limit := fs.Int("limit", 1000, "maximum rows")
 	sortBy := fs.String("sort", "", "sort by endpoint, status, score, or latency")
 	desc := fs.Bool("descending", false, "reverse sort order")
@@ -1065,8 +1210,9 @@ func (c CLI) results(args []string) int {
 		fmt.Fprintln(c.Stderr, "limit and max-load must be positive")
 		return ExitUsage
 	}
-	if math.IsNaN(*lat) || math.IsInf(*lat, 0) || *lat < 0 {
-		fmt.Fprintln(c.Stderr, "max-latency must be a finite non-negative number")
+	filter := resultFilter{status: *status, protocol: *proto, search: *search, exitIP: *exitIP, anonymity: *anonymity, country: *country, asn: *asn, networkType: *networkType, maxLatency: *lat, minScore: *minScore, minThroughput: *minThroughput}
+	if err := validateResultFilter(filter); err != nil {
+		fmt.Fprintln(c.Stderr, err)
 		return ExitUsage
 	}
 	path, err := store.ResolveRun(*data, *run)
@@ -1081,7 +1227,6 @@ func (c CLI) results(args []string) int {
 	}
 	w := output.New(c.Stdout, of, false)
 	n := 0
-	filter := resultFilter{status: *status, protocol: *proto, search: *search, exitIP: *exitIP, anonymity: *anonymity, maxLatency: *lat}
 	if *sortBy == "" {
 		err = store.ReadResults(path, func(r model.Result) error {
 			if matchResult(r, filter) && n < *limit {
@@ -1196,6 +1341,16 @@ func (c CLI) export(args []string) int {
 	format := fs.String("format", "jsonl", "jsonl, csv, txt")
 	out := fs.String("output", "-", "output file or -")
 	status := fs.String("status", "", "status filter")
+	proto := fs.String("protocol", "", "protocol filter")
+	search := fs.String("search", "", "endpoint substring")
+	exitIP := fs.String("exit-ip", "", "observed exit IP filter")
+	anonymity := fs.String("anonymity", "", "anonymity evidence filter")
+	country := fs.String("country", "", "country code or name filter")
+	asn := fs.String("asn", "", "ASN filter")
+	networkType := fs.String("network-type", "", "metadata network type filter")
+	lat := fs.Float64("max-latency", 0, "maximum median milliseconds")
+	minScore := fs.Float64("min-score", 0, "minimum score from 0 to 100")
+	minThroughput := fs.Float64("min-throughput-kbps", 0, "minimum observed response throughput")
 	force := fs.Bool("force", false, "replace an existing output file")
 	if ok, code := c.parseFlags(fs, buf, args); !ok {
 		return code
@@ -1210,30 +1365,43 @@ func (c CLI) export(args []string) int {
 		fmt.Fprintln(c.Stderr, err)
 		return ExitUsage
 	}
+	filter := resultFilter{status: *status, protocol: *proto, search: *search, exitIP: *exitIP, anonymity: *anonymity, country: *country, asn: *asn, networkType: *networkType, maxLatency: *lat, minScore: *minScore, minThroughput: *minThroughput}
+	if err := validateResultFilter(filter); err != nil {
+		fmt.Fprintln(c.Stderr, err)
+		return ExitUsage
+	}
 	var dst io.Writer = c.Stdout
-	var f *os.File
+	var fileOutput *secureOutput
 	if *out != "-" {
-		flags := os.O_CREATE | os.O_WRONLY | os.O_EXCL
-		if *force {
-			flags = os.O_CREATE | os.O_TRUNC | os.O_WRONLY
+		same, sameErr := samePath(path, *out)
+		if sameErr != nil {
+			fmt.Fprintln(c.Stderr, sameErr)
+			return ExitUsage
 		}
-		f, err = os.OpenFile(*out, flags, 0600)
+		if same {
+			fmt.Fprintln(c.Stderr, "export output must not overwrite its source run")
+			return ExitUsage
+		}
+		fileOutput, err = openSecureOutput(*out, *force)
 		if err != nil {
 			fmt.Fprintln(c.Stderr, err)
 			return ExitOperational
 		}
-		defer f.Close()
-		dst = f
+		defer fileOutput.Abort()
+		dst = fileOutput
 	}
 	w := output.New(dst, of, false)
 	err = store.ReadResults(path, func(r model.Result) error {
-		if *status == "" || string(r.Status) == *status {
+		if matchResult(r, filter) {
 			return w.WriteResult(r)
 		}
 		return nil
 	})
 	if err == nil {
 		err = w.Flush()
+	}
+	if err == nil && fileOutput != nil {
+		err = fileOutput.Commit()
 	}
 	if err != nil {
 		if errors.Is(err, syscall.EPIPE) {
@@ -1409,7 +1577,7 @@ func (c CLI) completion(args []string) int {
 		return ExitUsage
 	}
 	commands := "check inspect import results runs export stats config doctor bench completion version help"
-	checkFlags := "--profile --format --input-format --protocol --concurrency --queue-size --per-target --rate --repeat --min-success-rate --connect-timeout --request-timeout --dns-cache-ttl --retry-backoff --progress-interval --target --allow-host --allow-private-targets --allow-remote-dns --retry-permanent --stop-on-success --no-deduplicate --quiet --output-status --working-output --summary-output --force --save --data-dir --max-redirects --require-success --require-count --verbose --plain --color --config --help"
+	checkFlags := "--profile --format --input-format --protocol --concurrency --queue-size --per-target --rate --repeat --min-success-rate --min-response-bytes --min-throughput-kbps --require-text --reject-text --expect-json --baseline-ip --metadata-file --connect-timeout --request-timeout --dns-cache-ttl --retry-backoff --progress-interval --target --allow-host --allow-private-targets --allow-remote-dns --retry-permanent --stop-on-success --no-deduplicate --quiet --output-status --working-output --summary-output --force --save --data-dir --max-redirects --require-success --require-count --verbose --plain --color --config --help"
 	switch args[0] {
 	case "bash":
 		fmt.Fprintf(c.Stdout, `_relayprobe() {

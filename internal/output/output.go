@@ -55,23 +55,37 @@ func (w *Writer) WriteResult(r model.Result) error {
 		return w.json.Encode(r)
 	case FormatCSV:
 		if !w.header {
-			if e := w.csv.Write([]string{"id", "proxy", "endpoint", "protocol", "status", "attempts", "successes", "required_successes", "success_rate", "score", "confidence", "median_ms", "last_stage", "last_code", "last_message", "checked_at"}); e != nil {
+			if e := w.csv.Write([]string{"id", "proxy", "endpoint", "protocol", "status", "attempts", "successes", "required_successes", "success_rate", "score", "confidence", "median_ms", "last_stage", "last_code", "last_message", "exit_ip", "anonymity", "body_bytes", "throughput_kbps", "country_code", "country", "city", "asn", "organization", "network_type", "checked_at"}); e != nil {
 				return e
 			}
 			w.header = true
 		}
-		stage, code, msg := "", "", ""
+		stage, code, msg, exitIP, anonymity, bodyBytes, throughput := "", "", "", "", "", "", ""
+		countryCode, country, city, asn, organization, networkType := "", "", "", "", "", ""
 		if len(r.Observations) > 0 {
-			o := r.Observations[len(r.Observations)-1]
-			stage = string(o.Stage)
-			code = o.Code
-			msg = o.Message
+			last := r.Observations[len(r.Observations)-1]
+			stage, code, msg = string(last.Stage), last.Code, last.Message
+			measurement := last
+			for i := len(r.Observations) - 1; i >= 0; i-- {
+				if r.Observations[i].Status == model.StatusOK {
+					measurement = r.Observations[i]
+					break
+				}
+			}
+			exitIP = measurement.ExitIP
+			anonymity = measurement.Anonymity
+			bodyBytes = strconv.FormatInt(measurement.BodyBytes, 10)
+			throughput = strconv.FormatFloat(measurement.ThroughputKBPS, 'f', 1, 64)
+			if measurement.Metadata != nil {
+				countryCode, country, city = measurement.Metadata.CountryCode, measurement.Metadata.Country, measurement.Metadata.City
+				asn, organization, networkType = measurement.Metadata.ASN, measurement.Metadata.Organization, measurement.Metadata.NetworkType
+			}
 		}
 		scoreText := ""
 		if r.Score.Value != nil {
 			scoreText = strconv.FormatFloat(*r.Score.Value, 'f', 1, 64)
 		}
-		return w.csv.Write([]string{r.ID, r.Proxy, r.Endpoint, string(r.Protocol), string(r.Status), strconv.Itoa(r.Attempts), strconv.Itoa(r.Successes), strconv.Itoa(r.RequiredSuccesses), strconv.FormatFloat(r.Score.SuccessRate, 'f', 4, 64), scoreText, r.Score.Confidence, fmt.Sprintf("%.3f", r.Score.MedianMS), stage, code, msg, r.CheckedAt.Format("2006-01-02T15:04:05.999999999Z07:00")})
+		return w.csv.Write([]string{r.ID, r.Proxy, r.Endpoint, string(r.Protocol), string(r.Status), strconv.Itoa(r.Attempts), strconv.Itoa(r.Successes), strconv.Itoa(r.RequiredSuccesses), strconv.FormatFloat(r.Score.SuccessRate, 'f', 4, 64), scoreText, r.Score.Confidence, fmt.Sprintf("%.3f", r.Score.MedianMS), stage, code, msg, exitIP, anonymity, bodyBytes, throughput, countryCode, country, city, asn, organization, networkType, r.CheckedAt.Format("2006-01-02T15:04:05.999999999Z07:00")})
 	case FormatTXT:
 		_, e := fmt.Fprintln(w.out, r.Proxy)
 		return e

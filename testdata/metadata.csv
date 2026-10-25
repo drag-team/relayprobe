@@ -1,0 +1,4 @@
+prefix,country_code,country,city,asn,organization,network_type
+192.0.2.0/24,ZZ,Documentation,,AS64496,Example Network,unknown
+198.51.100.0/24,ZZ,Documentation,,AS64497,Example Network,unknown
+2001:db8::/32,ZZ,Documentation,,AS64498,Example Network,unknown

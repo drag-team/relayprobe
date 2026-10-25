@@ -78,6 +78,15 @@ func ParseProxy(raw string, defaultProtocol model.Protocol) (model.Proxy, error)
 	if strings.ContainsAny(raw, "\r\n\x00") {
 		return model.Proxy{}, errors.New("control characters are not allowed")
 	}
+	if !strings.Contains(raw, "://") && !strings.HasPrefix(raw, "[") && strings.Count(raw, ":") == 3 {
+		parts := strings.SplitN(raw, ":", 4)
+		if port, portErr := strconv.ParseUint(parts[1], 10, 16); portErr == nil && port > 0 {
+			if parts[2] == "" {
+				return model.Proxy{}, errors.New("proxy username must not be empty")
+			}
+			raw = string(defaultProtocol) + "://" + url.UserPassword(parts[2], parts[3]).String() + "@" + net.JoinHostPort(parts[0], parts[1])
+		}
+	}
 	if !strings.Contains(raw, "://") {
 		raw = string(defaultProtocol) + "://" + raw
 	}
@@ -272,6 +281,7 @@ func (p *Parser) emitCSV(r io.Reader, emit func(model.Proxy) error, reject func(
 	cr.FieldsPerRecord = -1
 	cr.ReuseRecord = true
 	line := 0
+	var columns map[string]int
 	for {
 		rec, err := cr.Read()
 		line++
@@ -284,17 +294,92 @@ func (p *Parser) emitCSV(r io.Reader, emit func(model.Proxy) error, reject func(
 		if len(rec) == 0 {
 			continue
 		}
-		raw := rec[0]
-		if line == 1 && (strings.EqualFold(strings.TrimSpace(raw), "proxy") || (len(rec) >= 2 && strings.EqualFold(strings.TrimSpace(rec[0]), "host") && strings.EqualFold(strings.TrimSpace(rec[1]), "port"))) {
-			continue
+		if line == 1 {
+			var headerErr error
+			columns, headerErr = csvHeader(rec)
+			if headerErr != nil {
+				return headerErr
+			}
+			if columns != nil {
+				continue
+			}
 		}
-		if len(rec) >= 2 && !strings.Contains(raw, "://") {
-			raw = strings.TrimSpace(rec[0]) + ":" + strings.TrimSpace(rec[1])
+		raw := ""
+		if columns != nil {
+			raw = csvProxy(rec, columns, p.opts.DefaultProtocol)
+		} else {
+			raw = rec[0]
+			if len(rec) >= 2 && !strings.Contains(raw, "://") {
+				raw = strings.TrimSpace(rec[0]) + ":" + strings.TrimSpace(rec[1])
+			}
 		}
 		if err := p.accept(raw, line, emit, reject); err != nil {
 			return err
 		}
 	}
+}
+
+func csvHeader(record []string) (map[string]int, error) {
+	columns := make(map[string]int, len(record))
+	for i, value := range record {
+		name := strings.ToLower(strings.TrimSpace(value))
+		if name == "" {
+			continue
+		}
+		if _, exists := columns[name]; exists {
+			return nil, fmt.Errorf("CSV header contains duplicate column %q", name)
+		}
+		columns[name] = i
+	}
+	_, proxy := columns["proxy"]
+	_, host := columns["host"]
+	_, ip := columns["ip"]
+	_, port := columns["port"]
+	if proxy || (port && (host || ip)) {
+		return columns, nil
+	}
+	return nil, nil
+}
+
+func csvProxy(record []string, columns map[string]int, defaultProtocol model.Protocol) string {
+	if index, ok := columns["proxy"]; ok {
+		return csvField(record, index)
+	}
+	hostIndex, ok := columns["host"]
+	if !ok {
+		hostIndex = columns["ip"]
+	}
+	host := csvField(record, hostIndex)
+	port := csvField(record, columns["port"])
+	protocol := string(defaultProtocol)
+	if index, ok := columns["protocol"]; ok && csvField(record, index) != "" {
+		protocol = strings.ToLower(csvField(record, index))
+	} else if index, ok := columns["scheme"]; ok && csvField(record, index) != "" {
+		protocol = strings.ToLower(csvField(record, index))
+	}
+	u := &url.URL{Scheme: protocol, Host: net.JoinHostPort(host, port)}
+	username := firstCSVField(record, columns, "username", "user", "login")
+	password := firstCSVField(record, columns, "password", "pass")
+	if username != "" || password != "" {
+		u.User = url.UserPassword(username, password)
+	}
+	return u.String()
+}
+
+func csvField(record []string, index int) string {
+	if index < 0 || index >= len(record) {
+		return ""
+	}
+	return strings.TrimSpace(record[index])
+}
+
+func firstCSVField(record []string, columns map[string]int, names ...string) string {
+	for _, name := range names {
+		if index, ok := columns[name]; ok {
+			return csvField(record, index)
+		}
+	}
+	return ""
 }
 
 func (p *Parser) emitJSON(r io.Reader, emit func(model.Proxy) error, reject func(Rejection)) error {

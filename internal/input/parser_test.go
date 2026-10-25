@@ -25,6 +25,19 @@ func TestParseProxyAndRedaction(t *testing.T) {
 	}
 }
 
+func TestCommercialHostPortUserPasswordFormat(t *testing.T) {
+	p, err := ParseProxy("1.2.3.4:8080:customer-zone-us:pa@ss", model.ProtocolHTTPS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Protocol != model.ProtocolHTTPS || p.Host != "1.2.3.4" || p.Port != 8080 || p.Credentials == nil || p.Credentials.Username != "customer-zone-us" || p.Credentials.Password != "pa@ss" {
+		t.Fatalf("unexpected proxy: %#v", p)
+	}
+	if p.FullURI() != "https://customer-zone-us:pa%40ss@1.2.3.4:8080" || strings.Contains(p.SafeURI(), "pa@ss") {
+		t.Fatalf("unsafe normalization: safe=%q full=%q", p.SafeURI(), p.FullURI())
+	}
+}
+
 func TestParseRejectsAmbiguousCredentials(t *testing.T) {
 	cases := []string{"host:80/path", "http://user@host:80", "http://host:0", "ftp://host:21"}
 	for _, s := range cases {
@@ -77,6 +90,24 @@ func TestCSVAndJSON(t *testing.T) {
 		if n == 0 {
 			t.Fatal("no records")
 		}
+	}
+}
+
+func TestCommercialCSVColumns(t *testing.T) {
+	p := New(Options{Format: FormatCSV, DefaultProtocol: model.ProtocolHTTP, MaxBytes: 1000})
+	var got []model.Proxy
+	data := "password,ip,protocol,port,username\npa@ss,1.2.3.4,https,8443,customer-zone-us\n"
+	if err := p.Emit(strings.NewReader(data), func(proxy model.Proxy) error {
+		got = append(got, proxy)
+		return nil
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Protocol != model.ProtocolHTTPS || got[0].Host != "1.2.3.4" || got[0].Port != 8443 || got[0].Credentials == nil || got[0].Credentials.Password != "pa@ss" {
+		t.Fatalf("unexpected CSV proxy: %+v", got)
+	}
+	if !strings.Contains(got[0].SafeURI(), "customer-zone-us:***") || strings.Contains(got[0].SafeURI(), "pa@ss") {
+		t.Fatalf("credential leak: %s", got[0].SafeURI())
 	}
 }
 
@@ -174,7 +205,7 @@ func TestJSONLAndRedactedCredentialRejection(t *testing.T) {
 }
 
 func FuzzParseProxy(f *testing.F) {
-	for _, s := range []string{"127.0.0.1:80", "socks5://u:p@host:1080", "http://[::1]:8080", "user:secret@bad", "\x00"} {
+	for _, s := range []string{"127.0.0.1:80", "1.2.3.4:8080:user:password", "https://u:p@host:8443", "socks5://u:p@host:1080", "http://[::1]:8080", "user:secret@bad", "\x00"} {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, s string) {

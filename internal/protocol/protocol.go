@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -45,6 +46,7 @@ func (e *Error) Unwrap() error { return e.Err }
 type TimedConn struct {
 	Conn      net.Conn
 	Connect   time.Duration
+	ProxyTLS  time.Duration
 	Negotiate time.Duration
 }
 
@@ -52,6 +54,7 @@ type Connector struct {
 	ConnectTimeout time.Duration
 	AllowRemoteDNS bool
 	DialContext    func(context.Context, string, string) (net.Conn, error)
+	TLSConfig      *tls.Config
 }
 
 func (c Connector) Open(ctx context.Context, proxy model.Proxy, dest policy.Destination) (TimedConn, error) {
@@ -76,9 +79,27 @@ func (c Connector) Open(ctx context.Context, proxy model.Proxy, dest policy.Dest
 	if deadline, yes := ctx.Deadline(); yes {
 		_ = conn.SetDeadline(deadline)
 	}
+	var proxyTLSTime time.Duration
+	if proxy.Protocol == model.ProtocolHTTPS {
+		proxyTLSStart := time.Now()
+		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: proxy.Host}
+		if c.TLSConfig != nil {
+			tlsConfig = c.TLSConfig.Clone()
+			if tlsConfig.MinVersion == 0 {
+				tlsConfig.MinVersion = tls.VersionTLS12
+			}
+			tlsConfig.ServerName = proxy.Host
+		}
+		secure := tls.Client(conn, tlsConfig)
+		if err := secure.HandshakeContext(ctx); err != nil {
+			return TimedConn{}, &Error{Stage: model.StageProxyTLS, Status: statusFromNet(err), Code: "proxy_tls_handshake", Detail: "TLS handshake or certificate validation with proxy failed", Err: err}
+		}
+		proxyTLSTime = time.Since(proxyTLSStart)
+		conn = secure
+	}
 	negStart := time.Now()
 	switch proxy.Protocol {
-	case model.ProtocolHTTP:
+	case model.ProtocolHTTP, model.ProtocolHTTPS:
 		if dest.URL.Scheme == "https" || !c.AllowRemoteDNS {
 			tunnel, tunnelErr := httpConnect(conn, proxy, dest, c.AllowRemoteDNS)
 			if tunnelErr != nil {
@@ -105,7 +126,15 @@ func (c Connector) Open(ctx context.Context, proxy model.Proxy, dest policy.Dest
 		return TimedConn{}, &Error{Stage: model.StageNegotiate, Status: model.StatusInvalid, Code: "unsupported_protocol", Detail: "unsupported proxy protocol"}
 	}
 	ok = true
-	return TimedConn{Conn: conn, Connect: connectTime, Negotiate: time.Since(negStart)}, nil
+	return TimedConn{Conn: conn, Connect: connectTime, ProxyTLS: proxyTLSTime, Negotiate: time.Since(negStart)}, nil
+}
+
+func statusFromNet(err error) model.Status {
+	var classified *Error
+	if errors.As(classifyNet(model.StageProxyTLS, "proxy_tls_handshake", err), &classified) {
+		return classified.Status
+	}
+	return model.StatusFailed
 }
 
 func httpConnect(conn net.Conn, proxy model.Proxy, dest policy.Destination, remoteDNS bool) (net.Conn, error) {

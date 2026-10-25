@@ -12,11 +12,12 @@ import (
 
 type Protocol string
 
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 const (
 	ProtocolAuto    Protocol = "auto"
 	ProtocolHTTP    Protocol = "http"
+	ProtocolHTTPS   Protocol = "https"
 	ProtocolSOCKS4  Protocol = "socks4"
 	ProtocolSOCKS4A Protocol = "socks4a"
 	ProtocolSOCKS5  Protocol = "socks5"
@@ -25,7 +26,7 @@ const (
 func ParseProtocol(s string) (Protocol, error) {
 	p := Protocol(strings.ToLower(strings.TrimSpace(s)))
 	switch p {
-	case ProtocolAuto, ProtocolHTTP, ProtocolSOCKS4, ProtocolSOCKS4A, ProtocolSOCKS5:
+	case ProtocolAuto, ProtocolHTTP, ProtocolHTTPS, ProtocolSOCKS4, ProtocolSOCKS4A, ProtocolSOCKS5:
 		return p, nil
 	default:
 		return "", fmt.Errorf("unsupported proxy protocol %q", s)
@@ -90,6 +91,7 @@ const (
 	StageInput     Stage = "input"
 	StageResolve   Stage = "resolve"
 	StageConnect   Stage = "connect"
+	StageProxyTLS  Stage = "proxy_tls"
 	StageNegotiate Stage = "negotiate"
 	StageTunnel    Stage = "tunnel"
 	StageTLS       Stage = "tls"
@@ -114,12 +116,14 @@ const (
 )
 
 type Timings struct {
-	DNSMS     float64 `json:"dns_ms,omitempty"`
-	ConnectMS float64 `json:"connect_ms,omitempty"`
-	TunnelMS  float64 `json:"tunnel_ms,omitempty"`
-	TLSMS     float64 `json:"tls_ms,omitempty"`
-	TTFBMS    float64 `json:"ttfb_ms,omitempty"`
-	TotalMS   float64 `json:"total_ms"`
+	DNSMS      float64 `json:"dns_ms,omitempty"`
+	ConnectMS  float64 `json:"connect_ms,omitempty"`
+	ProxyTLSMS float64 `json:"proxy_tls_ms,omitempty"`
+	TunnelMS   float64 `json:"tunnel_ms,omitempty"`
+	TLSMS      float64 `json:"tls_ms,omitempty"`
+	TTFBMS     float64 `json:"ttfb_ms,omitempty"`
+	BodyMS     float64 `json:"body_ms,omitempty"`
+	TotalMS    float64 `json:"total_ms"`
 }
 
 type Observation struct {
@@ -132,12 +136,24 @@ type Observation struct {
 	Code               string            `json:"code,omitempty"`
 	Message            string            `json:"message,omitempty"`
 	HTTPStatus         int               `json:"http_status,omitempty"`
+	BodyBytes          int64             `json:"body_bytes,omitempty"`
+	ThroughputKBPS     float64           `json:"throughput_kbps,omitempty"`
 	ExitIP             string            `json:"exit_ip,omitempty"`
 	Anonymity          string            `json:"anonymity,omitempty"`
 	ForwardingEvidence []string          `json:"forwarding_evidence,omitempty"`
 	ResolvedIP         string            `json:"resolved_ip,omitempty"`
 	Timings            Timings           `json:"timings"`
 	ResponseHeaders    map[string]string `json:"response_headers,omitempty"`
+	Metadata           *ExitMetadata     `json:"metadata,omitempty"`
+}
+
+type ExitMetadata struct {
+	CountryCode  string `json:"country_code,omitempty"`
+	Country      string `json:"country,omitempty"`
+	City         string `json:"city,omitempty"`
+	ASN          string `json:"asn,omitempty"`
+	Organization string `json:"organization,omitempty"`
+	NetworkType  string `json:"network_type,omitempty"`
 }
 
 type Score struct {
@@ -180,6 +196,10 @@ type RunConfiguration struct {
 	StopOnSuccess    bool     `json:"stop_on_success"`
 	RetryPermanent   bool     `json:"retry_permanent_failures"`
 	AllowRemoteDNS   bool     `json:"allow_remote_dns"`
+	MinResponseBytes int64    `json:"min_response_bytes,omitempty"`
+	MinThroughput    float64  `json:"min_throughput_kbps,omitempty"`
+	ContentRules     int      `json:"content_rules,omitempty"`
+	MetadataEnabled  bool     `json:"metadata_enabled,omitempty"`
 	Deduplicate      bool     `json:"deduplicate"`
 	ValidationTarget []string `json:"validation_targets"`
 }

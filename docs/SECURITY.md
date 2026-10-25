@@ -17,12 +17,14 @@ Default safeguards:
 - redirects independently allowlisted and resolved;
 - TLS 1.2 minimum and normal system certificate validation, never an insecure
   skip mode;
+- independent certificate validation for HTTPS proxies and HTTPS destinations;
 - overall, connect, input, line, response, concurrency, repeat, redirect, and
   target-count, URL-size, sorting and queue limits, plus a 64 KiB status/header limit;
 - one aggregate decompressed-byte budget across all plain and gzip input sources;
 - proxy passwords redacted from output and omitted from history;
 - redacted `***` passwords rejected when diagnostic output is re-imported;
 - target paths, fragments, and queries removed from persisted observations;
+- forwarding evidence stores names but not potentially identifying header values;
 - history and generated configuration use owner-only permissions;
 - standalone summaries and credential-bearing exports use atomic owner-only files;
 - generated configuration is synchronized and atomically replaced;
@@ -57,6 +59,17 @@ Anonymity observations are limited. Forwarded-header evidence proves that a
 chosen echo target observed a header; its absence cannot prove anonymity. Exit
 IP, geolocation, ASN, and operator labels can be wrong or unavailable. Treat
 third-party target response data as untrusted evidence.
+
+Elite, anonymous, and transparent labels require an operator-supplied baseline
+IP and an echo target that returns both exit-IP and header evidence. They describe
+one observed request, not a permanent property or guarantee. Supplying a
+baseline IP through a process argument may expose it in process listings; use a
+mode-0600 configuration file when that IP is sensitive.
+
+Metadata files are local untrusted input with decompressed-byte, record, prefix,
+and field limits. Their classifications are not independently verified. Content
+assertions identify response properties but do not solve, bypass, or interact
+with anti-bot challenges.
 
 Report vulnerabilities according to the repository's private disclosure
 procedure in [SECURITY.md](../SECURITY.md). Include the RelayProbe version,

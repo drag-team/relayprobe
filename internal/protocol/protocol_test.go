@@ -3,9 +3,16 @@ package protocol
 import (
 	"bufio"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/pem"
 	"errors"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/netip"
@@ -170,6 +177,64 @@ func TestConnectorsRelay(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHTTPSProxyTransportAndCertificateValidation(t *testing.T) {
+	cert, roots := proxyCertificate(t)
+	script := func(conn net.Conn) {
+		secure := tls.Server(conn, &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12})
+		if secure.Handshake() != nil {
+			return
+		}
+		httpScript(secure)
+	}
+	connector := pipeConnector(script)
+	connector.TLSConfig = &tls.Config{RootCAs: roots}
+	p := model.Proxy{Protocol: model.ProtocolHTTPS, Host: "proxy.test", Port: 8443}
+	got, err := connector.Open(context.Background(), p, destination())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer got.Conn.Close()
+	if _, err := got.Conn.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	b := make([]byte, 4)
+	if _, err := io.ReadFull(got.Conn, b); err != nil || string(b) != "ping" {
+		t.Fatalf("relay=%q err=%v", b, err)
+	}
+
+	untrusted := pipeConnector(script)
+	_, err = untrusted.Open(context.Background(), p, destination())
+	var pe *Error
+	if !errors.As(err, &pe) || pe.Stage != model.StageProxyTLS || pe.Code != "proxy_tls_handshake" {
+		t.Fatalf("unexpected certificate error: %v", err)
+	}
+}
+
+func proxyCertificate(t *testing.T) (tls.Certificate, *x509.CertPool) {
+	t.Helper()
+	pub, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "proxy.test"}, DNSNames: []string{"proxy.test"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	der, err := x509.CreateCertificate(rand.Reader, &template, &template, pub, privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := tls.X509KeyPair(certPEM, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	roots.AppendCertsFromPEM(certPEM)
+	return cert, roots
 }
 
 func TestSOCKS5Authentication(t *testing.T) {

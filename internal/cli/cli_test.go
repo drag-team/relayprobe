@@ -34,6 +34,16 @@ func TestImportAndRedaction(t *testing.T) {
 		t.Fatalf("diag=%q", diag)
 	}
 }
+
+func TestExplicitStandardInputSource(t *testing.T) {
+	code, out, diag := run([]string{"import", "-"}, "1.2.3.4:8080:user:password\n")
+	if code != ExitOK || !strings.Contains(out, "http://user:***@1.2.3.4:8080") || !strings.Contains(diag, "accepted=1") {
+		t.Fatalf("code=%d out=%q diag=%q", code, out, diag)
+	}
+	if code, _, _ = run([]string{"import", "-", "-"}, "host:80\n"); code != ExitUsage {
+		t.Fatalf("duplicate stdin code=%d", code)
+	}
+}
 func TestExitCodesAndUnknownCommand(t *testing.T) {
 	if code, _, _ := run([]string{"wat"}, ""); code != ExitUsage {
 		t.Fatalf("code %d", code)
@@ -96,7 +106,7 @@ func TestSavedResultCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 	v := 80.0
-	r := model.Result{ID: "a", Proxy: "http://host:80", Endpoint: "host:80", Protocol: model.ProtocolHTTP, Status: model.StatusOK, Attempts: 2, Successes: 2, Score: model.Score{Value: &v, MedianMS: 20}, Observations: []model.Observation{{Status: model.StatusOK, ExitIP: "8.8.8.8", Anonymity: "undetermined"}}}
+	r := model.Result{ID: "a", Proxy: "http://host:80", Endpoint: "host:80", Protocol: model.ProtocolHTTP, Status: model.StatusOK, Attempts: 2, Successes: 2, Score: model.Score{Value: &v, MedianMS: 20}, Observations: []model.Observation{{Status: model.StatusOK, ExitIP: "8.8.8.8", Anonymity: "elite", ThroughputKBPS: 500, Metadata: &model.ExitMetadata{CountryCode: "US", ASN: "AS15169", NetworkType: "residential"}}}}
 	if err = w.Write(r); err != nil {
 		t.Fatal(err)
 	}
@@ -104,16 +114,19 @@ func TestSavedResultCommands(t *testing.T) {
 	if err = w.Commit(s); err != nil {
 		t.Fatal(err)
 	}
-	code, out, diag := run([]string{"results", "--data-dir", d, "--run", "latest", "--format", "jsonl", "--exit-ip", "8.8.8.8", "--sort", "score"}, "")
+	code, out, diag := run([]string{"results", "--data-dir", d, "--run", "latest", "--format", "jsonl", "--exit-ip", "8.8.8.8", "--country", "US", "--asn", "15169", "--network-type", "residential", "--min-score", "75", "--min-throughput-kbps", "100", "--sort", "score"}, "")
 	if code != ExitOK || !strings.Contains(out, "host:80") {
 		t.Fatalf("%d %s %s", code, out, diag)
 	}
 	dst := filepath.Join(d, "out.csv")
-	if code, _, diag = run([]string{"export", "--data-dir", d, "--run", "latest", "--format", "csv", "--output", dst}, ""); code != ExitOK {
+	if code, _, diag = run([]string{"export", "--data-dir", d, "--run", "latest", "--format", "csv", "--country", "US", "--min-score", "75", "--max-latency", "25", "--output", dst}, ""); code != ExitOK {
 		t.Fatalf("export %d %s", code, diag)
 	}
 	if code, _, _ := run([]string{"export", "--data-dir", d, "--run", "latest", "--format", "csv", "--output", dst}, ""); code != ExitOperational {
 		t.Fatalf("overwrite export=%d", code)
+	}
+	if code, _, _ := run([]string{"export", "--run", w.Path(), "--output", w.Path(), "--force"}, ""); code != ExitUsage {
+		t.Fatalf("source overwrite export=%d", code)
 	}
 	if code, out, diag = run([]string{"stats", "--data-dir", d, "--run", "latest", "--compare", w.ID, "--json"}, ""); code != ExitOK || !strings.Contains(out, "baseline") {
 		t.Fatalf("stats %d %s %s", code, out, diag)
@@ -225,6 +238,23 @@ func TestExplicitFalseBooleanOverridesEnvironmentAndProfile(t *testing.T) {
 	}
 	if cfg.AllowRemoteDNS || cfg.Save || cfg.StopOnSuccess {
 		t.Fatalf("explicit false values did not override configuration: %+v", cfg)
+	}
+}
+
+func TestContentThroughputAndBaselineOptions(t *testing.T) {
+	o := checkOptions{
+		protocol: "https", format: "jsonl", inputFormat: "text", color: "never",
+		rate: -1, maxRedirects: -1, minResponseBytes: 32 << 10, minThroughput: 250,
+		requireText: stringsFlag{"expected-json"}, rejectText: stringsFlag{"access denied"},
+		expectJSON: stringsFlag{"status=ok"},
+		baselineIP: "198.51.100.10",
+	}
+	cfg, proto, _, _, err := (CLI{}).loadCheck(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proto != model.ProtocolHTTPS || cfg.MinResponseBytes != 32<<10 || cfg.MinThroughputKBPS != 250 || len(cfg.RequireText) != 1 || len(cfg.RejectText) != 1 || len(cfg.ExpectJSON) != 1 || cfg.AnonymityBaseline != "198.51.100.10" {
+		t.Fatalf("cfg=%+v proto=%s", cfg, proto)
 	}
 }
 

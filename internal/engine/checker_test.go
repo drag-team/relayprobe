@@ -42,6 +42,15 @@ func (failingResolver) LookupNetIP(context.Context, string, string) ([]netip.Add
 	return nil, errors.New("resolver unavailable")
 }
 
+type fixedMetadata struct{}
+
+func (fixedMetadata) Lookup(ip string) (model.ExitMetadata, bool) {
+	if ip == "8.8.8.8" {
+		return model.ExitMetadata{CountryCode: "US", ASN: "AS15169", NetworkType: "datacenter"}, true
+	}
+	return model.ExitMetadata{}, false
+}
+
 func pipeDial(script func(net.Conn)) func(context.Context, string, string) (net.Conn, error) {
 	return func(context.Context, string, string) (net.Conn, error) {
 		client, server := net.Pipe()
@@ -65,6 +74,8 @@ func baseChecker(target string) *Checker {
 
 func TestHTTPValidationAndIntelligence(t *testing.T) {
 	c := baseChecker("http://target.test/echo")
+	c.baseline = netip.MustParseAddr("192.0.2.1")
+	c.Metadata = fixedMetadata{}
 	c.Connector.DialContext = pipeDial(func(conn net.Conn) {
 		br := bufio.NewReader(conn)
 		connectReq, err := http.ReadRequest(br)
@@ -91,8 +102,88 @@ func TestHTTPValidationAndIntelligence(t *testing.T) {
 		t.Fatalf("%+v", r)
 	}
 	o := r.Observations[0]
-	if o.ExitIP != "8.8.8.8" || o.Anonymity != "apparently_non_anonymous" || len(o.ForwardingEvidence) != 1 {
+	if o.ExitIP != "8.8.8.8" || o.Anonymity != "transparent" || len(o.ForwardingEvidence) != 1 || o.ForwardingEvidence[0] != "X-Forwarded-For" || o.Metadata == nil || o.Metadata.ASN != "AS15169" {
 		t.Fatalf("%+v", o)
+	}
+}
+
+func TestAnonymityEvidenceLevels(t *testing.T) {
+	baseline := netip.MustParseAddr("192.0.2.1")
+	tests := []struct {
+		body string
+		want string
+	}{
+		{`{"origin":"8.8.8.8","headers":{}}`, "elite"},
+		{`{"origin":"8.8.8.8","headers":{"Via":"proxy"}}`, "anonymous"},
+		{`{"origin":"8.8.8.8","headers":{"X-Forwarded-For":"192.0.2.1"}}`, "transparent"},
+		{`{"origin":"192.0.2.1","headers":{}}`, "transparent"},
+	}
+	for _, tc := range tests {
+		_, got, evidence := extractIntelligence([]byte(tc.body), baseline)
+		if got != tc.want {
+			t.Fatalf("body=%s got=%s want=%s evidence=%v", tc.body, got, tc.want, evidence)
+		}
+	}
+	_, got, _ := extractIntelligence([]byte(tests[0].body), netip.Addr{})
+	if got != "undetermined" {
+		t.Fatalf("without baseline got=%s", got)
+	}
+	if !containsIP(`for="[2001:db8::1]:443"`, netip.MustParseAddr("2001:db8::1")) {
+		t.Fatal("IPv6 forwarded address was not detected")
+	}
+}
+
+func TestContentAssertionsAndThroughputEvidence(t *testing.T) {
+	body := "required-marker" + strings.Repeat("x", 20<<10)
+	newChecker := func() *Checker {
+		c := baseChecker("http://target.test/payload")
+		c.Config.MinResponseBytes = 16 << 10
+		c.Config.MinThroughputKBPS = 1
+		c.Config.RequireText = []string{"REQUIRED-MARKER"}
+		c.requireText = []string{"required-marker"}
+		c.Connector.DialContext = pipeDial(func(conn net.Conn) {
+			br := bufio.NewReader(conn)
+			_, _ = http.ReadRequest(br)
+			_, _ = io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n")
+			_, _ = http.ReadRequest(br)
+			_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Length: "+itoa(len(body))+"\r\n\r\n"+body)
+		})
+		return c
+	}
+	c := newChecker()
+	r := c.Check(context.Background(), model.Proxy{Protocol: model.ProtocolHTTP, Host: "proxy", Port: 8080})
+	if r.Status != model.StatusOK || r.Observations[0].BodyBytes != int64(len(body)) || r.Observations[0].ThroughputKBPS <= 0 {
+		t.Fatalf("result=%+v", r)
+	}
+	c = newChecker()
+	c.Config.RejectText = []string{"required-marker"}
+	c.rejectText = []string{"required-marker"}
+	r = c.Check(context.Background(), model.Proxy{Protocol: model.ProtocolHTTP, Host: "proxy", Port: 8080})
+	if r.Status != model.StatusFailed || r.Observations[0].Code != "rejected_content_present" || r.Observations[0].BodyBytes != int64(len(body)) {
+		t.Fatalf("result=%+v", r)
+	}
+}
+
+func TestJSONResponseAssertions(t *testing.T) {
+	body := `{"status":"ok","nested":{"value":2}}`
+	newChecker := func(expected string) *Checker {
+		c := baseChecker("http://target.test/json")
+		c.expectJSON = []jsonExpectation{{path: []string{"nested", "value"}, expected: expected}}
+		c.Connector.DialContext = pipeDial(func(conn net.Conn) {
+			br := bufio.NewReader(conn)
+			_, _ = http.ReadRequest(br)
+			_, _ = io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n")
+			_, _ = http.ReadRequest(br)
+			_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "+itoa(len(body))+"\r\n\r\n"+body)
+		})
+		return c
+	}
+	if result := newChecker("2").Check(context.Background(), model.Proxy{Protocol: model.ProtocolHTTP, Host: "proxy", Port: 8080}); result.Status != model.StatusOK {
+		t.Fatalf("matching assertion failed: %+v", result)
+	}
+	result := newChecker("3").Check(context.Background(), model.Proxy{Protocol: model.ProtocolHTTP, Host: "proxy", Port: 8080})
+	if result.Status != model.StatusFailed || result.Observations[0].Code != "json_assertion_failed" {
+		t.Fatalf("mismatch result=%+v", result)
 	}
 }
 

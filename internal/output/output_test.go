@@ -39,3 +39,31 @@ func TestMachineFormats(t *testing.T) {
 		}
 	}
 }
+
+func TestCSVUsesLatestSuccessfulMeasurement(t *testing.T) {
+	r := sample()
+	r.Observations = []model.Observation{
+		{Status: model.StatusOK, Stage: model.StageComplete, ExitIP: "8.8.8.8", ThroughputKBPS: 1250, Metadata: &model.ExitMetadata{CountryCode: "US"}},
+		{Status: model.StatusTimeout, Stage: model.StageResponse, Code: "body_read"},
+	}
+	var b bytes.Buffer
+	w := New(&b, FormatCSV, false)
+	if err := w.WriteResult(r); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := csv.NewReader(&b).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	header, row := rows[0], rows[1]
+	values := make(map[string]string, len(header))
+	for i, name := range header {
+		values[name] = row[i]
+	}
+	if values["last_code"] != "body_read" || values["exit_ip"] != "8.8.8.8" || values["country_code"] != "US" || values["throughput_kbps"] != "1250.0" {
+		t.Fatalf("unexpected CSV values: %+v", values)
+	}
+}

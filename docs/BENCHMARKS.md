@@ -82,3 +82,12 @@ Gzip detection and decompression added 21 allocations per 1,000-record batch
 and approximately 3.7% median time in this small-input test. Reproduce with
 `go test -run '^$' -bench '^BenchmarkParser' -benchmem -count=3 ./internal/input`.
 The throughput column counts decompressed bytes and is not a network result.
+
+The RelayProbe 0.6.0 development scheduler measured 786,085 items/s median
+across three 500,000-item runs at concurrency 128 on the same non-isolated host
+(range 779,540–855,874 items/s). This remains an engine-overhead baseline, not a
+network proxy rate.
+
+The offline IPv4 longest-prefix metadata lookup benchmark measured a median of
+408 ns/op across three samples, with zero allocations per lookup. Reproduce with
+`go test -run '^$' -bench '^BenchmarkLookupIPv4$' -benchmem -count=3 ./internal/metadata`.

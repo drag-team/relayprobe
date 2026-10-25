@@ -6,8 +6,9 @@
 
 RelayProbe is a fast, terminal-only proxy validation and intelligence tool for
 authorized datasets. It validates complete requests rather than treating an
-open port as proof that a proxy works. HTTP, HTTPS through CONNECT, SOCKS4,
-SOCKS4a, and SOCKS5 are supported by one bounded, streaming engine.
+open port as proof that a proxy works. HTTP, TLS-encrypted HTTPS proxies, HTTPS
+destinations through CONNECT, SOCKS4, SOCKS4a, and SOCKS5 are supported by one
+bounded, streaming engine.
 
 RelayProbe is an on-demand CLI. It has no web interface, listening service,
 daemon, telemetry, or root requirement.
@@ -19,6 +20,8 @@ daemon, telemetry, or root requirement.
 - Bounded workers, queues, target concurrency, request rate, response size, and retries.
 - Streaming TXT, CSV, JSON, JSONL, NDJSON, and gzip input with exact optional deduplication.
 - Repeat measurements, reliability thresholds, latency distributions, and explainable scores.
+- Response assertions, body throughput measurement, and evidence-based anonymity levels.
+- Optional offline country, city, ASN, organization, and network-type metadata.
 - JSONL, CSV, TXT, and human-readable output with clean stdout/stderr separation.
 - Atomic credential-bearing working lists and optional local run history.
 - TTY-aware color, plain output, shell completion, signal handling, and stable exit codes.
@@ -68,6 +71,10 @@ relayprobe check proxies.txt
 relayprobe check --format jsonl --concurrency 128 proxies.txt > results.jsonl
 relayprobe check --format txt --output-status ok proxies.txt > working-redacted.txt
 relayprobe check --quiet --summary-output summary.json --require-count 10 proxies.txt
+relayprobe check --reject-text "access denied" --reject-text "cf-turnstile" proxies.txt
+relayprobe check --expect-json status=ok --expect-json data.region=us-east proxies.txt
+relayprobe check --target https://download.example/payload.bin --min-response-bytes 262144 --min-throughput-kbps 500 proxies.txt
+relayprobe check --baseline-ip 198.51.100.10 --metadata-file ip-metadata.csv.gz --save proxies.txt
 relayprobe inspect socks5://127.0.0.1:1080 --target https://example.com/
 relayprobe import --protocol socks5 raw.txt > normalized.txt
 relayprobe check --input-format json --repeat 5 --save proxies.json
@@ -93,13 +100,16 @@ to HTTP. Supported text forms include:
 192.0.2.10:8080
 proxy.example:3128
 http://proxy.example:3128
+https://secure-proxy.example:8443
 socks4://proxy.example:1080
 socks4a://proxy.example:1080
 socks5://example-user:example-password@proxy.example:1080
+192.0.2.10:8080:example-user:example-password
 ```
 
 Text files accept blank lines, full-line comments beginning with `#` or `;`,
-and trailing ` # comment` fields. CSV accepts a `proxy` column or `host,port`.
+and trailing ` # comment` fields. CSV accepts a `proxy` column or named
+`host`/`ip`, `port`, `protocol`, `username`, and `password` columns in any order.
 JSON accepts a streamed array of URI strings or objects containing `proxy`, or
 `protocol`, `host`, and `port`. JSONL and NDJSON accept the same values one per
 line.
@@ -107,12 +117,18 @@ line.
 Gzip input is detected by its magic bytes on files and standard input. Automatic
 format detection understands names such as `proxies.csv.gz` and
 `proxies.jsonl.gz`; explicit `--input-format` remains available for streams
-without a useful filename.
+without a useful filename. With no input paths RelayProbe reads standard input;
+`-` can also select standard input explicitly among file arguments.
 
 URI credentials must be percent-encoded where necessary. Supply credentials in
 a mode-0600 file or protected standard input instead of shell arguments. Normal
 output and saved history redact passwords. A redacted `***` password cannot be
 re-imported as a credential.
+
+The commercial `host:port:username:password` form is accepted for IPv4 and
+hostnames when the second field is a valid port. Colons inside credentials are
+not representable in that form; use an authenticated URI with percent-encoding
+instead. Bracketed IPv6 must use URI or `host:port` syntax.
 
 Input is capped at 256 MiB by default across the complete invocation and
 individual text records at 1 MiB. For gzip sources, the aggregate cap applies to
@@ -134,6 +150,11 @@ target, and receive a previously approved numeric address. HTTPS retains the
 hostname only for SNI and certificate verification. SOCKS4a, SOCKS5 remote DNS,
 hostname CONNECT, and absolute-form HTTP forwarding require
 `--allow-remote-dns`.
+
+`https://` in a proxy URI means TLS is established and certificate-verified to
+the proxy itself before HTTP forwarding or CONNECT negotiation. This is distinct
+from using an HTTP proxy to reach an HTTPS destination. RelayProbe never exposes
+an option to skip proxy or destination certificate verification.
 
 The execution profiles are:
 
@@ -160,6 +181,25 @@ control failure cost and repeat behavior.
 `--verbose` prints periodic, real execution counters to stderr. Redirected and
 machine-readable stdout never receives ANSI sequences or progress messages.
 
+## Response assertions and throughput
+
+`--require-text VALUE` requires every configured case-insensitive substring to
+appear in the final response headers or body. `--reject-text VALUE` fails a
+measurement when any substring appears. Both options are repeatable and operate
+on bounded response data.
+They can detect provider-specific block pages, challenge markers, unexpected
+HTML, or missing JSON fields without adding a bypass mechanism.
+
+`--expect-json dot.path=value` performs exact scalar checks on a JSON response.
+Every configured assertion must resolve and match. Rules are reported by index,
+so potentially sensitive expected values do not enter diagnostics.
+
+RelayProbe records response body bytes, body-read time, and decimal KB/s.
+`--min-response-bytes` verifies that the controlled target returned a meaningful
+payload; `--min-throughput-kbps` qualifies the measured transfer rate. Enforcing
+throughput requires a response of at least 16 KiB. Use a stable, authorized,
+non-compressing payload target between 250 KiB and 1 MiB for useful comparisons.
+
 ## Scoring and evidence
 
 Raw attempt observations are retained separately from derived scores. With at
@@ -173,11 +213,19 @@ Confidence is low below five measurements, medium at five, and high at ten.
 Fewer than two measurements are reported as `insufficient`, avoiding false
 precision.
 
-Compatible JSON echo targets may provide observable exit IP and forwarded-header
-evidence. `apparently_non_anonymous` means explicit forwarding evidence was
-observed. Absence of evidence does not prove anonymity. Geolocation and ASN
-lookups are intentionally not bundled because they add external data disclosure
-and potentially stale third-party claims.
+Compatible JSON echo targets may provide observable exit IP and request-header
+evidence. With an explicit `--baseline-ip`, RelayProbe reports `elite` when the
+exit differs and no proxy header is observed, `anonymous` when proxy evidence is
+present without the baseline IP, and `transparent` when the baseline IP is
+exposed or equals the observed exit. Without a baseline the result remains
+`undetermined`; ordinary websites without echo evidence remain `unavailable`.
+Forwarding evidence stores header names, not potentially sensitive values.
+
+`--metadata-file` loads a local CIDR CSV or CSV.gz database and performs
+longest-prefix matching without third-party requests. Metadata can include
+country, city, ASN, organization, and an operator-supplied network type such as
+`residential`, `datacenter`, `mobile`, or `isp`. RelayProbe does not infer network
+type from organization names. See [metadata](docs/METADATA.md).
 
 ## Configuration
 
@@ -198,8 +246,9 @@ Environment configuration covers every persistent engine setting:
 | Measurements | `RELAYPROBE_REPEAT`, `RELAYPROBE_MIN_SUCCESS_RATE`, `RELAYPROBE_STOP_ON_SUCCESS`, `RELAYPROBE_RETRY_PERMANENT_FAILURES` |
 | Time | `RELAYPROBE_CONNECT_TIMEOUT`, `RELAYPROBE_REQUEST_TIMEOUT`, `RELAYPROBE_DNS_CACHE_TTL`, `RELAYPROBE_RETRY_BACKOFF`, `RELAYPROBE_PROGRESS_INTERVAL` |
 | Destinations | `RELAYPROBE_TARGETS`, `RELAYPROBE_ALLOWED_TARGET_HOSTS`, `RELAYPROBE_MAX_REDIRECTS`, `RELAYPROBE_ALLOW_PRIVATE_TARGETS`, `RELAYPROBE_ALLOW_REMOTE_DNS` |
+| Response qualification | `RELAYPROBE_MIN_RESPONSE_BYTES`, `RELAYPROBE_MIN_THROUGHPUT_KBPS`, `RELAYPROBE_REQUIRE_TEXT`, `RELAYPROBE_REJECT_TEXT`, `RELAYPROBE_EXPECT_JSON`, `RELAYPROBE_ANONYMITY_BASELINE_IP` |
 | Resource limits | `RELAYPROBE_MAX_INPUT_BYTES`, `RELAYPROBE_MAX_RESPONSE_BYTES` |
-| Persistence | `RELAYPROBE_DATA_DIR`, `RELAYPROBE_SAVE` |
+| Persistence and metadata | `RELAYPROBE_DATA_DIR`, `RELAYPROBE_SAVE`, `RELAYPROBE_METADATA_FILE` |
 
 List values are comma-separated. Boolean values use Go boolean syntax such as
 `true` or `false`. Invalid environment values stop execution before network
@@ -229,6 +278,14 @@ list with credentials, mode 0600. It commits only after a complete run, refuses
 to replace a file without `--force`, and cannot overwrite an input path. Treat
 the resulting file as a secret.
 
+Saved results can be filtered or exported using status, protocol, endpoint,
+exit IP, anonymity, maximum latency, minimum score, minimum throughput, country,
+ASN, and network type. File exports are mode 0600 and atomically committed.
+
+```sh
+relayprobe export --run latest --status ok --max-latency 400 --min-score 75 --country US --network-type residential --format txt --output us-residential.txt
+```
+
 ## Status and exit codes
 
 Statuses are `ok`, `failed`, `timeout`, `auth_failed`, `policy_blocked`,
@@ -256,7 +313,9 @@ relayprobe completion fish > ~/.config/fish/completions/relayprobe.fish
 - [Architecture](docs/ARCHITECTURE.md)
 - [Security model](docs/SECURITY.md)
 - [Data schemas](docs/SCHEMAS.md)
+- [Offline metadata](docs/METADATA.md)
 - [Benchmarks](docs/BENCHMARKS.md)
+- [Project status](docs/PROJECT_STATUS.md)
 - [Release process](docs/RELEASING.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security reporting](SECURITY.md)

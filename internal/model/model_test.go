@@ -22,6 +22,9 @@ func TestProtocolValidation(t *testing.T) {
 	if _, err := ParseProtocol("SOCKS5"); err != nil {
 		t.Fatal(err)
 	}
+	if p, err := ParseProtocol("HTTPS"); err != nil || p != ProtocolHTTPS {
+		t.Fatalf("HTTPS parse: %q %v", p, err)
+	}
 	if _, err := ParseProtocol("ftp"); err == nil {
 		t.Fatal("unsupported protocol accepted")
 	}

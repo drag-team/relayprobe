@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"sort"
 	"strings"
@@ -25,16 +27,30 @@ import (
 )
 
 type Checker struct {
-	Config    config.Config
-	Policy    *policy.Policy
-	Connector protocol.Connector
-	mu        sync.Mutex
-	targetSem map[string]chan struct{}
-	TLSConfig *tls.Config
-	rateMu    sync.Mutex
-	nextStart time.Time
-	resolveMu sync.Mutex
-	resolved  map[string]*resolveEntry
+	Config      config.Config
+	Policy      *policy.Policy
+	Connector   protocol.Connector
+	mu          sync.Mutex
+	targetSem   map[string]chan struct{}
+	TLSConfig   *tls.Config
+	rateMu      sync.Mutex
+	nextStart   time.Time
+	resolveMu   sync.Mutex
+	resolved    map[string]*resolveEntry
+	baseline    netip.Addr
+	Metadata    MetadataLookup
+	requireText []string
+	rejectText  []string
+	expectJSON  []jsonExpectation
+}
+
+type jsonExpectation struct {
+	path     []string
+	expected string
+}
+
+type MetadataLookup interface {
+	Lookup(string) (model.ExitMetadata, bool)
 }
 
 type resolveEntry struct {
@@ -45,7 +61,19 @@ type resolveEntry struct {
 }
 
 func NewChecker(c config.Config) *Checker {
-	return &Checker{Config: c, Policy: policy.New(c.AllowPrivate, c.AllowedHosts), Connector: protocol.Connector{ConnectTimeout: c.ConnectTimeout, AllowRemoteDNS: c.AllowRemoteDNS}, targetSem: make(map[string]chan struct{}), resolved: make(map[string]*resolveEntry)}
+	baseline, _ := netip.ParseAddr(c.AnonymityBaseline)
+	checker := &Checker{Config: c, Policy: policy.New(c.AllowPrivate, c.AllowedHosts), Connector: protocol.Connector{ConnectTimeout: c.ConnectTimeout, AllowRemoteDNS: c.AllowRemoteDNS}, targetSem: make(map[string]chan struct{}), resolved: make(map[string]*resolveEntry), baseline: baseline.Unmap()}
+	for _, rule := range c.RequireText {
+		checker.requireText = append(checker.requireText, strings.ToLower(rule))
+	}
+	for _, rule := range c.RejectText {
+		checker.rejectText = append(checker.rejectText, strings.ToLower(rule))
+	}
+	for _, rule := range c.ExpectJSON {
+		path, expected, _ := strings.Cut(rule, "=")
+		checker.expectJSON = append(checker.expectJSON, jsonExpectation{path: strings.Split(path, "."), expected: expected})
+	}
+	return checker
 }
 
 func (c *Checker) Check(ctx context.Context, p model.Proxy) model.Result {
@@ -148,29 +176,31 @@ func (c *Checker) attempt(parent context.Context, p model.Proxy, target string, 
 	defer release()
 	protos := []model.Protocol{p.Protocol}
 	if p.Protocol == model.ProtocolAuto {
-		protos = []model.Protocol{model.ProtocolHTTP, model.ProtocolSOCKS5, model.ProtocolSOCKS4}
+		protos = []model.Protocol{model.ProtocolHTTP, model.ProtocolHTTPS, model.ProtocolSOCKS5, model.ProtocolSOCKS4}
 		if c.Config.AllowRemoteDNS {
 			protos = append(protos, model.ProtocolSOCKS4A)
 		}
 	}
 	var best error
 	bestProtocol := p.Protocol
+	bestObservation := obs
 	for _, protoName := range protos {
 		candidate := p
 		candidate.Protocol = protoName
 		obs.Protocol = protoName
 		got, e := c.request(ctx, candidate, destinationForProtocol(dest, protoName))
+		got.Attempt = n
+		got.StartedAt = obs.StartedAt
+		got.Target = obs.Target
+		got.Timings.DNSMS = obs.Timings.DNSMS
 		if e == nil {
-			got.Attempt = n
-			got.StartedAt = obs.StartedAt
-			got.Target = obs.Target
-			got.Timings.DNSMS = obs.Timings.DNSMS
 			got.Timings.TotalMS = ms(time.Since(start))
 			return got
 		}
 		if best == nil || errorPriority(e) > errorPriority(best) {
 			best = e
 			bestProtocol = protoName
+			bestObservation = got
 		}
 		if ctx.Err() != nil {
 			best = ctx.Err()
@@ -178,8 +208,8 @@ func (c *Checker) attempt(parent context.Context, p model.Proxy, target string, 
 			break
 		}
 	}
-	obs.Protocol = bestProtocol
-	return finishError(obs, start, best)
+	bestObservation.Protocol = bestProtocol
+	return finishError(bestObservation, start, best)
 }
 
 func targetOrigin(raw string) string {
@@ -296,6 +326,7 @@ func (c *Checker) requestWithRedirects(ctx context.Context, p model.Proxy, dest 
 	}
 	defer timed.Conn.Close()
 	obs.Timings.ConnectMS = ms(timed.Connect)
+	obs.Timings.ProxyTLSMS = ms(timed.ProxyTLS)
 	obs.Timings.TunnelMS = ms(timed.Negotiate)
 	conn := timed.Conn
 	if dest.URL.Scheme == "https" {
@@ -327,8 +358,9 @@ func (c *Checker) requestWithRedirects(ctx context.Context, p model.Proxy, dest 
 	req.Host = dest.URL.Host
 	req.Header.Set("User-Agent", buildinfo.UserAgent())
 	req.Header.Set("Accept", "application/json, text/plain;q=0.8, */*;q=0.1")
+	req.Header.Set("Accept-Encoding", "identity")
 	req.Close = true
-	forwardMode := p.Protocol == model.ProtocolHTTP && dest.URL.Scheme == "http" && c.Config.AllowRemoteDNS
+	forwardMode := (p.Protocol == model.ProtocolHTTP || p.Protocol == model.ProtocolHTTPS) && dest.URL.Scheme == "http" && c.Config.AllowRemoteDNS
 	if forwardMode && p.Credentials != nil {
 		req.Header.Set("Proxy-Authorization", "Basic "+basicToken(p.Credentials.Username, p.Credentials.Password))
 	}
@@ -349,7 +381,14 @@ func (c *Checker) requestWithRedirects(ctx context.Context, p model.Proxy, dest 
 	defer resp.Body.Close()
 	obs.HTTPStatus = resp.StatusCode
 	obs.ResponseHeaders = selectedHeaders(resp.Header)
+	bodyStart := time.Now()
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, c.Config.MaxResponseBytes+1))
+	bodyDuration := time.Since(bodyStart)
+	obs.Timings.BodyMS = ms(bodyDuration)
+	obs.BodyBytes = int64(len(body))
+	if obs.BodyBytes > 0 && bodyDuration > 0 {
+		obs.ThroughputKBPS = float64(obs.BodyBytes) / 1000 / bodyDuration.Seconds()
+	}
 	if readErr != nil {
 		return obs, &protocol.Error{Stage: model.StageResponse, Status: statusFor(readErr), Code: "body_read", Detail: "failed to read response body", Err: readErr}
 	}
@@ -372,9 +411,58 @@ func (c *Checker) requestWithRedirects(ctx context.Context, p model.Proxy, dest 
 	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
 		return obs, &protocol.Error{Stage: model.StageResponse, Status: model.StatusInconclusive, Code: "http_status", Detail: fmt.Sprintf("destination returned HTTP status %d", resp.StatusCode)}
 	}
+	if len(c.requireText) > 0 || len(c.rejectText) > 0 {
+		bodyLower := bytes.ToLower(body)
+		var headerText strings.Builder
+		headerText.Grow(1024)
+		for name, values := range resp.Header {
+			headerText.WriteByte('\n')
+			headerText.WriteString(strings.ToLower(name))
+			headerText.WriteByte(':')
+			headerText.WriteString(strings.ToLower(strings.Join(values, ",")))
+		}
+		headersLower := headerText.String()
+		for i, required := range c.requireText {
+			if !bytes.Contains(bodyLower, []byte(required)) && !strings.Contains(headersLower, required) {
+				return obs, &protocol.Error{Stage: model.StageResponse, Status: model.StatusFailed, Code: "required_content_missing", Detail: fmt.Sprintf("response did not satisfy required content rule %d", i+1)}
+			}
+		}
+		for i, rejected := range c.rejectText {
+			if bytes.Contains(bodyLower, []byte(rejected)) || strings.Contains(headersLower, rejected) {
+				return obs, &protocol.Error{Stage: model.StageResponse, Status: model.StatusFailed, Code: "rejected_content_present", Detail: fmt.Sprintf("response matched rejected content rule %d", i+1)}
+			}
+		}
+	}
+	if len(c.expectJSON) > 0 {
+		var document any
+		decoder := json.NewDecoder(bytes.NewReader(body))
+		decoder.UseNumber()
+		decodeErr := decoder.Decode(&document)
+		var trailing any
+		if decodeErr != nil || decoder.Decode(&trailing) != io.EOF {
+			return obs, &protocol.Error{Stage: model.StageResponse, Status: model.StatusFailed, Code: "expected_json_invalid", Detail: "response is not valid JSON required by configured assertions"}
+		}
+		for i, expectation := range c.expectJSON {
+			value, found := jsonPath(document, expectation.path)
+			if !found || fmt.Sprint(value) != expectation.expected {
+				return obs, &protocol.Error{Stage: model.StageResponse, Status: model.StatusFailed, Code: "json_assertion_failed", Detail: fmt.Sprintf("response did not satisfy JSON assertion %d", i+1)}
+			}
+		}
+	}
+	if obs.BodyBytes < c.Config.MinResponseBytes {
+		return obs, &protocol.Error{Stage: model.StageResponse, Status: model.StatusFailed, Code: "response_too_small", Detail: "response body is smaller than the configured measurement size"}
+	}
+	if c.Config.MinThroughputKBPS > 0 && obs.ThroughputKBPS < c.Config.MinThroughputKBPS {
+		return obs, &protocol.Error{Stage: model.StageResponse, Status: model.StatusFailed, Code: "throughput_below_minimum", Detail: "response throughput is below the configured minimum"}
+	}
 	obs.Status = model.StatusOK
 	obs.Stage = model.StageComplete
-	obs.ExitIP, obs.Anonymity, obs.ForwardingEvidence = extractIntelligence(body)
+	obs.ExitIP, obs.Anonymity, obs.ForwardingEvidence = extractIntelligence(body, c.baseline)
+	if c.Metadata != nil && obs.ExitIP != "" {
+		if metadata, ok := c.Metadata.Lookup(obs.ExitIP); ok {
+			obs.Metadata = &metadata
+		}
+	}
 	return obs, nil
 }
 
@@ -389,8 +477,10 @@ func (c *Checker) followRedirect(ctx context.Context, p model.Proxy, u *url.URL,
 	next, err := c.requestWithRedirects(ctx, p, dest, left)
 	if err == nil {
 		next.Timings.ConnectMS += prior.Timings.ConnectMS
+		next.Timings.ProxyTLSMS += prior.Timings.ProxyTLSMS
 		next.Timings.TunnelMS += prior.Timings.TunnelMS
 		next.Timings.TLSMS += prior.Timings.TLSMS
+		next.Timings.BodyMS += prior.Timings.BodyMS
 	}
 	return next, err
 }
@@ -487,7 +577,7 @@ func selectedHeaders(h http.Header) map[string]string {
 	return out
 }
 
-func extractIntelligence(body []byte) (string, string, []string) {
+func extractIntelligence(body []byte, baseline netip.Addr) (string, string, []string) {
 	var v map[string]any
 	if json.Unmarshal(body, &v) != nil {
 		return "", "unavailable", nil
@@ -503,25 +593,61 @@ func extractIntelligence(body []byte) (string, string, []string) {
 		}
 	}
 	evidence := []string{}
+	baselineForwarded := false
 	if headers, ok := v["headers"].(map[string]any); ok {
 		for k, val := range headers {
 			lk := strings.ToLower(k)
-			if lk == "forwarded" || lk == "x-forwarded-for" || lk == "x-real-ip" || lk == "client-ip" {
-				item := fmt.Sprintf("%s=%v", k, val)
-				if len(item) > 256 {
-					item = item[:256]
+			if lk == "via" || lk == "forwarded" || lk == "x-forwarded-for" || lk == "x-real-ip" || lk == "client-ip" {
+				evidence = append(evidence, http.CanonicalHeaderKey(k))
+				if baseline.IsValid() && containsIP(fmt.Sprint(val), baseline) {
+					baselineForwarded = true
 				}
-				evidence = append(evidence, item)
 			}
 		}
 	}
 	sort.Strings(evidence)
 	anon := "undetermined"
-	if len(evidence) > 0 {
-		anon = "apparently_non_anonymous"
-	}
 	if exit == "" && len(evidence) == 0 {
 		anon = "unavailable"
+	} else if baseline.IsValid() {
+		exitAddr, _ := netip.ParseAddr(exit)
+		switch {
+		case baselineForwarded || exitAddr.IsValid() && exitAddr.Unmap() == baseline.Unmap():
+			anon = "transparent"
+		case len(evidence) > 0:
+			anon = "anonymous"
+		case exitAddr.IsValid():
+			anon = "elite"
+		}
 	}
 	return exit, anon, evidence
+}
+
+func containsIP(value string, expected netip.Addr) bool {
+	for _, field := range strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == ';' || r == ' ' || r == '=' || r == '"'
+	}) {
+		if addr, err := netip.ParseAddr(strings.Trim(field, "[]")); err == nil && addr.Unmap() == expected.Unmap() {
+			return true
+		}
+		if addrPort, err := netip.ParseAddrPort(field); err == nil && addrPort.Addr().Unmap() == expected.Unmap() {
+			return true
+		}
+	}
+	return false
+}
+
+func jsonPath(value any, path []string) (any, bool) {
+	current := value
+	for _, key := range path {
+		object, ok := current.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		current, ok = object[key]
+		if !ok {
+			return nil, false
+		}
+	}
+	return current, true
 }

@@ -22,7 +22,7 @@ text / CSV / JSON / gzip
 ```
 
 Packages are divided by responsibility: `input`, `config`, `policy`,
-`protocol`, `engine`, `score`, `metrics`, `output`, `store`, and `cli`.
+`protocol`, `engine`, `metadata`, `score`, `metrics`, `output`, `store`, and `cli`.
 Interactive and non-interactive commands use the same engine and models.
 
 The global worker count, configurable job/result queues, and per-target semaphores are all
@@ -62,6 +62,11 @@ SOCKS4 selects an approved IPv4 answer even if the resolver returned IPv6
 first. Auto detection includes SOCKS4a only when remote DNS was deliberately
 enabled.
 
+HTTPS proxy transport wraps the proxy TCP connection in TLS 1.2 or newer with
+normal hostname and certificate verification. CONNECT or absolute-form HTTP is
+then performed inside that protected transport. Proxy TLS and destination TLS
+have separate stages and timings.
+
 Raw attempt observations are stored independently from the score. Score changes
 therefore do not destroy evidence. Latency summary quantiles use a fixed-memory
 1 ms histogram capped at the five-minute maximum attempt duration.
@@ -70,6 +75,12 @@ Credential-bearing working lists and standalone JSON summaries share the same
 same-directory temporary-file, flush, synchronization, and atomic-commit path.
 Canonical path comparison resolves symbolic-link aliases before an output can
 replace an input.
+
+Optional metadata is loaded before workers start into IPv4 and IPv6 prefix maps.
+Lookup checks at most 33 IPv4 or 129 IPv6 prefix lengths and never performs a
+network request. Content qualification operates only on the already bounded
+response body. Transfer rate uses body bytes divided by body-read duration and
+is kept separate from TTFB and total latency.
 
 Qualification uses a configurable minimum success ratio. The checker computes
 the required success count before starting, stops when that count is reached in

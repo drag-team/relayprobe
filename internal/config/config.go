@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -29,6 +30,13 @@ type Config struct {
 	MaxRedirects      int           `json:"max_redirects"`
 	MaxInputBytes     int64         `json:"max_input_bytes"`
 	MaxResponseBytes  int64         `json:"max_response_bytes"`
+	MinResponseBytes  int64         `json:"min_response_bytes"`
+	MinThroughputKBPS float64       `json:"min_throughput_kbps"`
+	RequireText       []string      `json:"require_text,omitempty"`
+	RejectText        []string      `json:"reject_text,omitempty"`
+	ExpectJSON        []string      `json:"expect_json,omitempty"`
+	AnonymityBaseline string        `json:"anonymity_baseline_ip,omitempty"`
+	MetadataFile      string        `json:"metadata_file,omitempty"`
 	AllowPrivate      bool          `json:"allow_private_targets"`
 	AllowRemoteDNS    bool          `json:"allow_remote_dns"`
 	RetryPermanent    bool          `json:"retry_permanent_failures"`
@@ -115,6 +123,7 @@ func applyEnv(c *Config) error {
 	}{
 		{"RELAYPROBE_MAX_INPUT_BYTES", &c.MaxInputBytes},
 		{"RELAYPROBE_MAX_RESPONSE_BYTES", &c.MaxResponseBytes},
+		{"RELAYPROBE_MIN_RESPONSE_BYTES", &c.MinResponseBytes},
 	} {
 		if err := envInt64(item.name, item.dst); err != nil {
 			return err
@@ -126,6 +135,7 @@ func applyEnv(c *Config) error {
 	}{
 		{"RELAYPROBE_REQUESTS_PER_SECOND", &c.RateLimit},
 		{"RELAYPROBE_MIN_SUCCESS_RATE", &c.MinSuccessRate},
+		{"RELAYPROBE_MIN_THROUGHPUT_KBPS", &c.MinThroughputKBPS},
 	} {
 		if err := envFloat(item.name, item.dst); err != nil {
 			return err
@@ -154,11 +164,26 @@ func applyEnv(c *Config) error {
 	if v := os.Getenv("RELAYPROBE_DATA_DIR"); v != "" {
 		c.DataDir = v
 	}
+	if v := os.Getenv("RELAYPROBE_METADATA_FILE"); v != "" {
+		c.MetadataFile = v
+	}
 	if v := os.Getenv("RELAYPROBE_TARGETS"); v != "" {
 		c.Targets = envList(v)
 	}
 	if v := os.Getenv("RELAYPROBE_ALLOWED_TARGET_HOSTS"); v != "" {
 		c.AllowedHosts = envList(v)
+	}
+	if v := os.Getenv("RELAYPROBE_REQUIRE_TEXT"); v != "" {
+		c.RequireText = envList(v)
+	}
+	if v := os.Getenv("RELAYPROBE_REJECT_TEXT"); v != "" {
+		c.RejectText = envList(v)
+	}
+	if v := os.Getenv("RELAYPROBE_EXPECT_JSON"); v != "" {
+		c.ExpectJSON = envList(v)
+	}
+	if v := os.Getenv("RELAYPROBE_ANONYMITY_BASELINE_IP"); v != "" {
+		c.AnonymityBaseline = strings.TrimSpace(v)
 	}
 	if v := os.Getenv("RELAYPROBE_DNS_CACHE_TTL"); v != "" {
 		c.DNSCacheTTLRaw = v
@@ -297,6 +322,39 @@ func (c Config) Validate() error {
 	}
 	if c.MaxResponseBytes < 1024 || c.MaxResponseBytes > 64<<20 {
 		return errors.New("max_response_bytes must be between 1KiB and 64MiB")
+	}
+	if c.MinResponseBytes < 0 || c.MinResponseBytes > c.MaxResponseBytes {
+		return errors.New("min_response_bytes must be between 0 and max_response_bytes")
+	}
+	if math.IsNaN(c.MinThroughputKBPS) || math.IsInf(c.MinThroughputKBPS, 0) || c.MinThroughputKBPS < 0 || c.MinThroughputKBPS > 100_000_000 {
+		return errors.New("min_throughput_kbps must be between 0 and 100000000")
+	}
+	if c.MinThroughputKBPS > 0 && c.MinResponseBytes < 16<<10 {
+		return errors.New("min_response_bytes must be at least 16384 when enforcing throughput")
+	}
+	if len(c.RequireText) > 16 || len(c.RejectText) > 16 || len(c.ExpectJSON) > 16 {
+		return errors.New("at most 16 rules of each content assertion type are allowed")
+	}
+	for _, rule := range append(append([]string{}, c.RequireText...), c.RejectText...) {
+		if len(rule) < 1 || len(rule) > 256 {
+			return errors.New("content assertion strings must contain 1 to 256 bytes")
+		}
+	}
+	for _, rule := range c.ExpectJSON {
+		path, _, ok := strings.Cut(rule, "=")
+		if !ok || path == "" || len(rule) > 512 {
+			return errors.New("JSON assertions must use a non-empty path=value form of at most 512 bytes")
+		}
+		for _, segment := range strings.Split(path, ".") {
+			if segment == "" {
+				return errors.New("JSON assertion paths must contain non-empty dot-separated keys")
+			}
+		}
+	}
+	if c.AnonymityBaseline != "" {
+		if _, err := netip.ParseAddr(c.AnonymityBaseline); err != nil {
+			return errors.New("anonymity_baseline_ip must be an IP address")
+		}
 	}
 	if len(c.Targets) == 0 {
 		return errors.New("at least one validation target is required")

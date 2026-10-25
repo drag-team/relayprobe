@@ -10,11 +10,13 @@ it is not a promise that every item will ship unchanged.
 - Add compatibility coverage across current Ubuntu LTS releases.
 - Expand hostile-input fuzzing for CSV, JSON, JSONL, and HTTP response parsing.
 - Add deterministic benchmark comparison tooling for pull requests.
+- Summarize exit-IP rotation and sticky-session stability across repeated checks.
 
 ## Under evaluation
 
 - Signed releases, provenance attestations, and software bills of materials.
-- Optional metadata providers with explicit privacy controls and local caching.
+- Licensed MMDB metadata adapters alongside the existing offline CIDR CSV format.
+- Opt-in, locally cached reputation evidence with explicit disclosure controls.
 - A transactional SQLite history backend for larger local datasets.
 - Additional authenticated proxy mechanisms backed by controlled fixtures.
 
