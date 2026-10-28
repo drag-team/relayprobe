@@ -55,12 +55,13 @@ func (w *Writer) WriteResult(r model.Result) error {
 		return w.json.Encode(r)
 	case FormatCSV:
 		if !w.header {
-			if e := w.csv.Write([]string{"id", "proxy", "endpoint", "protocol", "status", "attempts", "successes", "required_successes", "success_rate", "score", "confidence", "median_ms", "last_stage", "last_code", "last_message", "exit_ip", "anonymity", "body_bytes", "throughput_kbps", "country_code", "country", "city", "asn", "organization", "network_type", "checked_at"}); e != nil {
+			if e := w.csv.Write([]string{"id", "label", "proxy", "endpoint", "protocol", "status", "attempts", "successes", "required_successes", "target_quorum", "success_rate", "score", "confidence", "median_ms", "rotation", "unique_exit_ips", "exit_changes", "dominant_exit_ip", "last_stage", "last_code", "last_message", "proxy_authentication", "exit_ip", "anonymity", "body_bytes", "body_sha256", "throughput_kbps", "tls_version", "tls_cipher", "tls_alpn", "country_code", "country", "city", "asn", "organization", "network_type", "checked_at"}); e != nil {
 				return e
 			}
 			w.header = true
 		}
-		stage, code, msg, exitIP, anonymity, bodyBytes, throughput := "", "", "", "", "", "", ""
+		stage, code, msg, proxyAuth, exitIP, anonymity, bodyBytes, bodySHA, throughput := "", "", "", "", "", "", "", "", ""
+		tlsVersion, tlsCipher, tlsALPN := "", "", ""
 		countryCode, country, city, asn, organization, networkType := "", "", "", "", "", ""
 		if len(r.Observations) > 0 {
 			last := r.Observations[len(r.Observations)-1]
@@ -72,10 +73,15 @@ func (w *Writer) WriteResult(r model.Result) error {
 					break
 				}
 			}
+			proxyAuth = measurement.ProxyAuthentication
 			exitIP = measurement.ExitIP
 			anonymity = measurement.Anonymity
 			bodyBytes = strconv.FormatInt(measurement.BodyBytes, 10)
+			bodySHA = measurement.BodySHA256
 			throughput = strconv.FormatFloat(measurement.ThroughputKBPS, 'f', 1, 64)
+			if measurement.DestinationTLS != nil {
+				tlsVersion, tlsCipher, tlsALPN = measurement.DestinationTLS.Version, measurement.DestinationTLS.CipherSuite, measurement.DestinationTLS.ALPN
+			}
 			if measurement.Metadata != nil {
 				countryCode, country, city = measurement.Metadata.CountryCode, measurement.Metadata.Country, measurement.Metadata.City
 				asn, organization, networkType = measurement.Metadata.ASN, measurement.Metadata.Organization, measurement.Metadata.NetworkType
@@ -85,13 +91,13 @@ func (w *Writer) WriteResult(r model.Result) error {
 		if r.Score.Value != nil {
 			scoreText = strconv.FormatFloat(*r.Score.Value, 'f', 1, 64)
 		}
-		return w.csv.Write([]string{r.ID, r.Proxy, r.Endpoint, string(r.Protocol), string(r.Status), strconv.Itoa(r.Attempts), strconv.Itoa(r.Successes), strconv.Itoa(r.RequiredSuccesses), strconv.FormatFloat(r.Score.SuccessRate, 'f', 4, 64), scoreText, r.Score.Confidence, fmt.Sprintf("%.3f", r.Score.MedianMS), stage, code, msg, exitIP, anonymity, bodyBytes, throughput, countryCode, country, city, asn, organization, networkType, r.CheckedAt.Format("2006-01-02T15:04:05.999999999Z07:00")})
+		return w.csv.Write([]string{r.ID, r.Label, r.Proxy, r.Endpoint, string(r.Protocol), string(r.Status), strconv.Itoa(r.Attempts), strconv.Itoa(r.Successes), strconv.Itoa(r.RequiredSuccesses), strconv.Itoa(r.TargetQuorum), strconv.FormatFloat(r.Score.SuccessRate, 'f', 4, 64), scoreText, r.Score.Confidence, fmt.Sprintf("%.3f", r.Score.MedianMS), r.Rotation.Classification, strconv.Itoa(r.Rotation.UniqueExitIPs), strconv.Itoa(r.Rotation.ExitChanges), r.Rotation.DominantExitIP, stage, code, msg, proxyAuth, exitIP, anonymity, bodyBytes, bodySHA, throughput, tlsVersion, tlsCipher, tlsALPN, countryCode, country, city, asn, organization, networkType, r.CheckedAt.Format("2006-01-02T15:04:05.999999999Z07:00")})
 	case FormatTXT:
 		_, e := fmt.Fprintln(w.out, r.Proxy)
 		return e
 	default:
 		if !w.header {
-			fmt.Fprintln(w.out, "STATUS        PROTOCOL  SCORE  SUCCESS  NEED  MEDIAN    PROXY")
+			fmt.Fprintln(w.out, "STATUS        PROTOCOL  SCORE  SUCCESS  NEED  MEDIAN    ROTATION     PROXY")
 			w.header = true
 		}
 		scoreText := "—"
@@ -117,7 +123,11 @@ func (w *Writer) WriteResult(r model.Result) error {
 				status = "\x1b[31m" + status + "\x1b[0m"
 			}
 		}
-		_, e := fmt.Fprintf(w.out, "%s %-9s %5s  %3d/%-3d  %4d  %-9s %s\n", status, r.Protocol, scoreText, r.Successes, r.Attempts, r.RequiredSuccesses, med, r.Proxy)
+		rotation := r.Rotation.Classification
+		if rotation == "" {
+			rotation = "—"
+		}
+		_, e := fmt.Fprintf(w.out, "%s %-9s %5s  %3d/%-3d  %4d  %-9s %-12s %s\n", status, r.Protocol, scoreText, r.Successes, r.Attempts, r.RequiredSuccesses, med, rotation, r.Proxy)
 		return e
 	}
 }

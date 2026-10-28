@@ -37,7 +37,7 @@ func TestImportAndRedaction(t *testing.T) {
 
 func TestExplicitStandardInputSource(t *testing.T) {
 	code, out, diag := run([]string{"import", "-"}, "1.2.3.4:8080:user:password\n")
-	if code != ExitOK || !strings.Contains(out, "http://user:***@1.2.3.4:8080") || !strings.Contains(diag, "accepted=1") {
+	if code != ExitOK || !strings.Contains(out, "http://***:***@1.2.3.4:8080") || !strings.Contains(diag, "accepted=1") {
 		t.Fatalf("code=%d out=%q diag=%q", code, out, diag)
 	}
 	if code, _, _ = run([]string{"import", "-", "-"}, "host:80\n"); code != ExitUsage {
@@ -63,11 +63,111 @@ func TestExitCodesAndUnknownCommand(t *testing.T) {
 }
 
 func TestSubcommandHelpIsSuccessful(t *testing.T) {
-	for _, cmd := range []string{"check", "import", "results", "runs", "export", "stats", "config", "doctor", "bench"} {
+	for _, cmd := range []string{"check", "import", "results", "runs", "export", "stats", "history", "pool", "shard", "merge", "explore", "config", "doctor", "bench"} {
 		code, out, _ := run([]string{cmd, "--help"}, "")
 		if code != ExitOK || !strings.Contains(out, "Usage of") {
 			t.Fatalf("%s code=%d out=%q", cmd, code, out)
 		}
+	}
+}
+
+func TestShardDistributesNormalizedCredentials(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "input.txt")
+	if err := os.WriteFile(input, []byte("1.2.3.4:80:user:pass\nproxy.test:8080\nproxy.test:8080\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, _, diag := run([]string{"shard", "--shards", "2", "--output-dir", dir, "--prefix", "part", input}, "")
+	if code != ExitOK || !strings.Contains(diag, "accepted=2") || !strings.Contains(diag, "duplicates=1") {
+		t.Fatalf("code=%d diag=%q", code, diag)
+	}
+	combined := ""
+	for i := 1; i <= 2; i++ {
+		path := filepath.Join(dir, fmt.Sprintf("part-%04d-of-0002.txt", i))
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		combined += string(data)
+		if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0600 {
+			t.Fatalf("mode=%v err=%v", info, err)
+		}
+	}
+	if !strings.Contains(combined, "http://user:pass@1.2.3.4:80") || !strings.Contains(combined, "http://proxy.test:8080") {
+		t.Fatalf("combined=%q", combined)
+	}
+}
+
+func TestMergeBestAndRotationFilters(t *testing.T) {
+	dir := t.TempDir()
+	older := filepath.Join(dir, "older.jsonl")
+	newer := filepath.Join(dir, "newer.jsonl")
+	low, high := 10.0, 90.0
+	base := model.Result{SchemaVersion: model.SchemaVersion, ID: "same", Proxy: "http://host:80", Endpoint: "host:80", Protocol: model.ProtocolHTTP, Status: model.StatusFailed, Score: model.Score{Value: &low}, CheckedAt: time.Now().Add(-time.Hour)}
+	best := base
+	best.Status, best.Score.Value, best.CheckedAt = model.StatusOK, &high, time.Now()
+	best.Label = "pool-a"
+	best.Rotation = model.RotationProfile{Classification: "rotating", UniqueExitIPs: 3}
+	for path, result := range map[string]model.Result{older: base, newer: best} {
+		payload, _ := json.Marshal(result)
+		if err := os.WriteFile(path, append(payload, '\n'), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out := filepath.Join(dir, "merged.jsonl")
+	code, _, diag := run([]string{"merge", "--strategy", "best", "--output", out, older, newer}, "")
+	if code != ExitOK || !strings.Contains(diag, "merged=1") {
+		t.Fatalf("code=%d diag=%q", code, diag)
+	}
+	code, stdout, diag := run([]string{"results", "--run", out, "--format", "jsonl", "--label", "pool-a", "--rotation", "rotating", "--min-unique-exits", "3"}, "")
+	if code != ExitOK || !strings.Contains(stdout, `"status":"ok"`) {
+		t.Fatalf("code=%d stdout=%q diag=%q", code, stdout, diag)
+	}
+}
+
+func TestQualityPolicyAndJUnit(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := filepath.Join(dir, "policy.json")
+	if err := os.WriteFile(policyPath, []byte(`{"schema_version":1,"min_successful":1}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	junit := filepath.Join(dir, "report.xml")
+	code, _, diag := run([]string{"check", "--quiet", "--target", "http://127.0.0.1/", "--policy", policyPath, "--junit-output", junit}, "proxy.test:8080\n")
+	if code != ExitNoSuccess || !strings.Contains(diag, "quality gate failed") {
+		t.Fatalf("code=%d diag=%q", code, diag)
+	}
+	payload, err := os.ReadFile(junit)
+	if err != nil || !strings.Contains(string(payload), `failures="1"`) {
+		t.Fatalf("junit=%q err=%v", payload, err)
+	}
+}
+
+func TestResumeIncludesCheckpointResults(t *testing.T) {
+	dir := t.TempDir()
+	checkpoint := filepath.Join(dir, "checkpoint.jsonl")
+	input := "proxy.test:8080\n"
+	args := []string{"check", "--quiet", "--target", "http://127.0.0.1/", "--checkpoint", checkpoint}
+	if code, _, diag := run(args, input); code != ExitOK {
+		t.Fatalf("initial code=%d diag=%q", code, diag)
+	}
+	summaryPath := filepath.Join(dir, "summary.json")
+	code, _, diag := run([]string{"check", "--quiet", "--target", "http://127.0.0.1/", "--resume", checkpoint, "--summary-output", summaryPath}, input)
+	if code != ExitOK {
+		t.Fatalf("resume code=%d diag=%q", code, diag)
+	}
+	payload, err := os.ReadFile(summaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var summary model.RunSummary
+	if err := json.Unmarshal(payload, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary.Processed != 1 || summary.Restored != 1 || summary.Input.Resumed != 1 || summary.Failed != 1 || summary.RatePerSec != 0 {
+		t.Fatalf("summary=%+v", summary)
+	}
+	if code, _, _ := run([]string{"check", "--resume", checkpoint, "--working-output", filepath.Join(dir, "working.txt")}, input); code != ExitUsage {
+		t.Fatalf("resume working-output code=%d", code)
 	}
 }
 

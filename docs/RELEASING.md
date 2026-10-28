@@ -27,7 +27,7 @@ preparation before tagging it.
 ## Tag
 
 Create an annotated tag only after the release commit has passed CI. The
-following example uses `0.6.0`; replace it with the version in `VERSION`:
+following example uses `0.7.0`; replace it with the version in `VERSION`:
 
 ```sh
 version="$(cat VERSION)"
@@ -46,7 +46,7 @@ unverified working tree.
 Download each archive and its checksum onto a clean Linux host:
 
 ```sh
-version="0.6.0"
+version="0.7.0"
 sha256sum --check "relayprobe-v${version}-linux-amd64.tar.gz.sha256"
 tar -xzf "relayprobe-v${version}-linux-amd64.tar.gz"
 ./"relayprobe-v${version}-linux-amd64"/relayprobe version

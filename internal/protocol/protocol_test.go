@@ -169,6 +169,9 @@ func TestConnectorsRelay(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if got.AuthMethod != "none" {
+				t.Fatalf("auth method=%q", got.AuthMethod)
+			}
 			defer got.Conn.Close()
 			_, _ = got.Conn.Write([]byte("ping"))
 			b := make([]byte, 4)
@@ -194,6 +197,9 @@ func TestHTTPSProxyTransportAndCertificateValidation(t *testing.T) {
 	got, err := connector.Open(context.Background(), p, destination())
 	if err != nil {
 		t.Fatal(err)
+	}
+	if got.AuthMethod != "none" {
+		t.Fatalf("auth method=%q", got.AuthMethod)
 	}
 	defer got.Conn.Close()
 	if _, err := got.Conn.Write([]byte("ping")); err != nil {
@@ -254,6 +260,9 @@ func TestSOCKS5Authentication(t *testing.T) {
 	got, err := pipeConnector(socks5Script("user", "secret")).Open(context.Background(), p, destination())
 	if err != nil {
 		t.Fatal(err)
+	}
+	if got.AuthMethod != "username_password" {
+		t.Fatalf("auth method=%q", got.AuthMethod)
 	}
 	got.Conn.Close()
 }

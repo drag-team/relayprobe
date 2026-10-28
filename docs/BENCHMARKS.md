@@ -91,3 +91,16 @@ network proxy rate.
 The offline IPv4 longest-prefix metadata lookup benchmark measured a median of
 408 ns/op across three samples, with zero allocations per lookup. Reproduce with
 `go test -run '^$' -bench '^BenchmarkLookupIPv4$' -benchmem -count=3 ./internal/metadata`.
+
+The RelayProbe 0.7.0 development engine measured 812,682 items/s median across
+three 500,000-item runs at concurrency 128 on 2026-10-26 (range
+789,790–869,883 items/s). The corresponding scheduler microbenchmarks measured
+1,962 ns/op with one worker, 1,245 ns/op with 16 workers, and 1,029 ns/op with
+128 workers at the median; all retained 32 B/op and 3 allocations/op.
+
+Ephemeral HMAC deduplication was implemented with a bounded stack fast path.
+The 1,000-record parser benchmark then measured 3.81 ms/op median for plain text
+(4.96 MB/s) and 3.81 ms/op median for gzip (4.96 MB/s), with 5,007 and 5,028
+allocations respectively. The host was not isolated and the gzip samples had
+visible scheduler variance, so these figures are regression evidence rather
+than performance guarantees.

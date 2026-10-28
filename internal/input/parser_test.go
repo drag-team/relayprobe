@@ -106,7 +106,7 @@ func TestCommercialCSVColumns(t *testing.T) {
 	if len(got) != 1 || got[0].Protocol != model.ProtocolHTTPS || got[0].Host != "1.2.3.4" || got[0].Port != 8443 || got[0].Credentials == nil || got[0].Credentials.Password != "pa@ss" {
 		t.Fatalf("unexpected CSV proxy: %+v", got)
 	}
-	if !strings.Contains(got[0].SafeURI(), "customer-zone-us:***") || strings.Contains(got[0].SafeURI(), "pa@ss") {
+	if !strings.Contains(got[0].SafeURI(), "***:***") || strings.Contains(got[0].SafeURI(), "customer-zone-us") || strings.Contains(got[0].SafeURI(), "pa@ss") {
 		t.Fatalf("credential leak: %s", got[0].SafeURI())
 	}
 }
@@ -116,6 +116,29 @@ func TestJSONRejectsTrailingValues(t *testing.T) {
 	err := p.Emit(strings.NewReader(`["proxy.test:80"] true`), func(model.Proxy) error { return nil }, nil)
 	if err == nil {
 		t.Fatal("accepted trailing JSON value")
+	}
+}
+
+func TestJSONObjectCredentials(t *testing.T) {
+	p := New(Options{Format: FormatJSON, DefaultProtocol: model.ProtocolHTTP})
+	var got model.Proxy
+	err := p.Emit(strings.NewReader(`[{"protocol":"socks5","host":"proxy.test","port":1080,"username":"user","password":"p@ss"}]`), func(proxy model.Proxy) error {
+		got = proxy
+		return nil
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Credentials == nil || got.Credentials.Username != "user" || got.Credentials.Password != "p@ss" || got.Protocol != model.ProtocolSOCKS5 {
+		t.Fatalf("proxy=%+v", got)
+	}
+}
+
+func TestAggregateEntryLimit(t *testing.T) {
+	p := New(Options{Format: FormatText, DefaultProtocol: model.ProtocolHTTP, MaxBytes: 1000, MaxEntries: 1})
+	err := p.Emit(strings.NewReader("one.test:80\ntwo.test:80\n"), func(model.Proxy) error { return nil }, nil)
+	if err == nil || !strings.Contains(err.Error(), "1-entry") || p.Stats.Accepted != 1 {
+		t.Fatalf("stats=%+v err=%v", p.Stats, err)
 	}
 }
 

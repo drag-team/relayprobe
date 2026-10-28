@@ -15,19 +15,24 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/drag-team/relayprobe/internal/buildinfo"
 	"github.com/drag-team/relayprobe/internal/config"
 	"github.com/drag-team/relayprobe/internal/engine"
+	historypkg "github.com/drag-team/relayprobe/internal/history"
 	inputpkg "github.com/drag-team/relayprobe/internal/input"
 	metadatapkg "github.com/drag-team/relayprobe/internal/metadata"
 	"github.com/drag-team/relayprobe/internal/metrics"
 	"github.com/drag-team/relayprobe/internal/model"
 	"github.com/drag-team/relayprobe/internal/output"
+	qualitypkg "github.com/drag-team/relayprobe/internal/quality"
+	"github.com/drag-team/relayprobe/internal/scenario"
 	"github.com/drag-team/relayprobe/internal/store"
 )
 
@@ -70,6 +75,16 @@ func (c CLI) Run(args []string) int {
 		return c.export(args[1:])
 	case "stats":
 		return c.stats(args[1:])
+	case "history":
+		return c.history(args[1:])
+	case "pool":
+		return c.pool(args[1:])
+	case "shard":
+		return c.shard(args[1:])
+	case "merge":
+		return c.merge(args[1:])
+	case "explore":
+		return c.explore(args[1:])
 	case "config":
 		return c.configCmd(args[1:])
 	case "doctor":
@@ -97,6 +112,11 @@ Commands:
   runs       list saved validation runs
   export     export a saved run as JSONL, CSV, or TXT
   stats      summarize a saved run
+  history    analyze stability across saved runs
+  pool       analyze exit, subnet, ASN, and country diversity
+  shard      split normalized proxy datasets reproducibly
+  merge      merge and deduplicate result runs
+  explore    interactively browse a saved run
   config     show, validate, or initialize configuration
   doctor     diagnose the local runtime and optional network resolution
   bench      run a controlled scheduler benchmark
@@ -105,7 +125,7 @@ Commands:
 
 Run 'relayprobe <command> --help' for command options.
 Exit codes: 0 completed, 2 usage/config, 3 operational, 4 no valid input,
-5 validation threshold not met (--require-success/--require-count), 130 interrupted.
+5 validation threshold or quality policy not met, 130 interrupted.
 `)
 	return ExitOK
 }
@@ -117,7 +137,8 @@ func (s *stringsFlag) Set(v string) error { *s = append(*s, v); return nil }
 
 type checkOptions struct {
 	configPath, profile, format, inputFormat, protocol, color   string
-	concurrency, queueSize, perTarget, repeat                   int
+	concurrency                                                 string
+	queueSize, perTarget, repeat, maxInputEntries               int
 	connectTimeout, requestTimeout, dnsCacheTTL, retryBackoff   string
 	progressInterval                                            string
 	targets, allowHosts, requireText, rejectText, expectJSON    stringsFlag
@@ -125,12 +146,19 @@ type checkOptions struct {
 	dataDir                                                     string
 	maxRedirects                                                int
 	requireCount                                                int
-	minResponseBytes                                            int64
+	minResponseBytes, maxInputBytes                             int64
 	rate, minSuccessRate, minThroughput                         float64
-	baselineIP, metadataFile                                    string
+	baselineIP, metadataFile, expectedBodySHA                   string
+	caBundle, proxyCABundle, scenarioPath, label                string
+	rotationInterval, preflight                                 string
+	rotationSamples, targetQuorum                               int
+	targetMatrix                                                bool
 	plain                                                       bool
 	workingOutput                                               string
 	summaryOutput                                               string
+	checkpointOutput, resumeCheckpoint                          string
+	qualityPolicy, junitOutput                                  string
+	checkpointSync                                              int
 	forceWorking                                                bool
 	noDeduplicate, retryPermanent, stopOnSuccess, quiet         bool
 	outputStatus                                                string
@@ -167,19 +195,31 @@ func (c CLI) addCheckFlags(fs *flag.FlagSet, o *checkOptions) {
 	fs.StringVar(&o.protocol, "protocol", "http", "default protocol: http, https, socks4, socks4a, socks5, auto")
 	fs.StringVar(&o.color, "color", "auto", "color: auto, always, never")
 	fs.BoolVar(&o.plain, "plain", false, "disable ANSI styling for plain terminal output")
-	fs.IntVar(&o.concurrency, "concurrency", 0, "global concurrency (1..4096)")
+	fs.StringVar(&o.concurrency, "concurrency", "", "global concurrency (1..4096 or auto)")
 	fs.IntVar(&o.queueSize, "queue-size", 0, "bounded input/result queue size (1..65536)")
 	fs.IntVar(&o.perTarget, "per-target", 0, "per-target concurrency")
 	fs.Float64Var(&o.rate, "rate", -1, "maximum validation attempts per second; 0 disables")
 	fs.IntVar(&o.repeat, "repeat", 0, "measurements per proxy (1..20)")
+	fs.Int64Var(&o.maxInputBytes, "max-input-bytes", -1, "maximum aggregate decompressed input bytes")
+	fs.IntVar(&o.maxInputEntries, "max-input-entries", -1, "maximum aggregate input records")
 	fs.Float64Var(&o.minSuccessRate, "min-success-rate", -1, "minimum successful measurement ratio (0..1]")
 	fs.Int64Var(&o.minResponseBytes, "min-response-bytes", -1, "minimum response body size for a successful measurement")
 	fs.Float64Var(&o.minThroughput, "min-throughput-kbps", -1, "minimum measured response-body throughput in decimal KB/s")
 	fs.Var(&o.requireText, "require-text", "case-insensitive response substring required for success (repeatable)")
 	fs.Var(&o.rejectText, "reject-text", "case-insensitive response substring that fails validation (repeatable)")
 	fs.Var(&o.expectJSON, "expect-json", "required dot.path=value JSON assertion (repeatable)")
+	fs.StringVar(&o.expectedBodySHA, "expect-sha256", "", "required SHA-256 of the final response body")
 	fs.StringVar(&o.baselineIP, "baseline-ip", "", "local public IP used for evidence-based anonymity classification")
 	fs.StringVar(&o.metadataFile, "metadata-file", "", "offline exit-IP metadata CSV or CSV.gz database")
+	fs.StringVar(&o.caBundle, "ca-bundle", "", "additional PEM CA bundle for HTTPS destinations")
+	fs.StringVar(&o.proxyCABundle, "proxy-ca-bundle", "", "additional PEM CA bundle for TLS-encrypted proxies")
+	fs.StringVar(&o.scenarioPath, "scenario", "", "declarative validation scenario JSON file")
+	fs.StringVar(&o.label, "label", "", "safe pool label stored with results")
+	fs.BoolVar(&o.targetMatrix, "target-matrix", false, "run the configured repeat count against every target")
+	fs.IntVar(&o.targetQuorum, "target-quorum", -1, "required qualified targets in matrix mode; 0 means all")
+	fs.IntVar(&o.rotationSamples, "rotation-samples", -1, "minimum exit-IP samples per proxy (2..50; 0 disables)")
+	fs.StringVar(&o.rotationInterval, "rotation-interval", "", "delay between rotation samples")
+	fs.StringVar(&o.preflight, "preflight", "", "direct target health check: off, report, or strict")
 	fs.StringVar(&o.connectTimeout, "connect-timeout", "", "TCP connect timeout")
 	fs.StringVar(&o.requestTimeout, "request-timeout", "", "overall attempt timeout")
 	fs.StringVar(&o.dnsCacheTTL, "dns-cache-ttl", "", "cache approved target DNS answers (0 disables)")
@@ -196,6 +236,11 @@ func (c CLI) addCheckFlags(fs *flag.FlagSet, o *checkOptions) {
 	fs.StringVar(&o.outputStatus, "output-status", "all", "stdout results: all, ok, failed, timeout, auth_failed, policy_blocked, invalid, inconclusive, unreliable, interrupted")
 	fs.StringVar(&o.workingOutput, "working-output", "", "write validated proxies with credentials to a mode-0600 file")
 	fs.StringVar(&o.summaryOutput, "summary-output", "", "atomically write the run summary as JSON")
+	fs.StringVar(&o.checkpointOutput, "checkpoint", "", "append completed results to a resumable JSONL checkpoint")
+	fs.StringVar(&o.resumeCheckpoint, "resume", "", "resume and append an existing checkpoint JSONL file")
+	fs.IntVar(&o.checkpointSync, "checkpoint-sync", 100, "synchronize a checkpoint after this many results")
+	fs.StringVar(&o.qualityPolicy, "policy", "", "JSON quality-gate policy evaluated after the run")
+	fs.StringVar(&o.junitOutput, "junit-output", "", "atomically write a JUnit XML quality report")
 	fs.BoolVar(&o.forceWorking, "force", false, "replace an existing working or summary output file")
 	fs.BoolVar(&o.save, "save", false, "persist run results locally")
 	fs.StringVar(&o.dataDir, "data-dir", "", "history directory")
@@ -210,11 +255,35 @@ func (c CLI) loadCheck(o checkOptions) (config.Config, model.Protocol, output.Fo
 	if err != nil {
 		return cfg, "", "", false, err
 	}
+	if o.scenarioPath != "" {
+		document, scenarioErr := scenario.Load(o.scenarioPath)
+		if scenarioErr != nil {
+			return cfg, "", "", false, scenarioErr
+		}
+		if scenarioErr := scenario.Apply(document, &cfg); scenarioErr != nil {
+			return cfg, "", "", false, scenarioErr
+		}
+	}
 	if err := applyProfile(&cfg, o.profile); err != nil {
 		return cfg, "", "", false, err
 	}
-	if o.concurrency != 0 {
-		cfg.Concurrency = o.concurrency
+	if o.concurrency != "" {
+		if strings.EqualFold(o.concurrency, "auto") {
+			cfg.Concurrency = recommendedConcurrency()
+			cfg.AutoConcurrency = true
+			if !o.explicit["queue-size"] {
+				cfg.QueueSize = minInt(cfg.Concurrency*2, 65536)
+			}
+			if !o.explicit["per-target"] {
+				cfg.PerTarget = maxInt(1, cfg.Concurrency/2)
+			}
+		} else {
+			value, parseErr := strconv.Atoi(o.concurrency)
+			if parseErr != nil {
+				return cfg, "", "", false, errors.New("concurrency must be an integer or auto")
+			}
+			cfg.Concurrency = value
+		}
 	}
 	if o.queueSize != 0 {
 		cfg.QueueSize = o.queueSize
@@ -227,6 +296,12 @@ func (c CLI) loadCheck(o checkOptions) (config.Config, model.Protocol, output.Fo
 	}
 	if o.repeat != 0 {
 		cfg.Repeat = o.repeat
+	}
+	if o.maxInputBytes > 0 || o.explicit["max-input-bytes"] {
+		cfg.MaxInputBytes = o.maxInputBytes
+	}
+	if o.maxInputEntries > 0 || o.explicit["max-input-entries"] {
+		cfg.MaxInputEntries = o.maxInputEntries
 	}
 	if o.minSuccessRate != -1 && o.minSuccessRate != 0 {
 		cfg.MinSuccessRate = o.minSuccessRate
@@ -246,11 +321,35 @@ func (c CLI) loadCheck(o checkOptions) (config.Config, model.Protocol, output.Fo
 	if len(o.expectJSON) > 0 {
 		cfg.ExpectJSON = append([]string(nil), o.expectJSON...)
 	}
+	if o.expectedBodySHA != "" || o.explicit["expect-sha256"] {
+		cfg.ExpectedBodySHA = strings.ToLower(strings.TrimSpace(o.expectedBodySHA))
+	}
 	if o.baselineIP != "" || o.explicit["baseline-ip"] {
 		cfg.AnonymityBaseline = o.baselineIP
 	}
 	if o.metadataFile != "" || o.explicit["metadata-file"] {
 		cfg.MetadataFile = o.metadataFile
+	}
+	if o.caBundle != "" || o.explicit["ca-bundle"] {
+		cfg.CABundle = o.caBundle
+	}
+	if o.proxyCABundle != "" || o.explicit["proxy-ca-bundle"] {
+		cfg.ProxyCABundle = o.proxyCABundle
+	}
+	if o.targetMatrix || o.explicit["target-matrix"] {
+		cfg.TargetMatrix = o.targetMatrix
+	}
+	if o.targetQuorum >= 0 {
+		cfg.TargetQuorum = o.targetQuorum
+	}
+	if o.rotationSamples >= 0 {
+		cfg.RotationSamples = o.rotationSamples
+	}
+	if o.rotationInterval != "" {
+		cfg.RotationRaw = o.rotationInterval
+	}
+	if o.preflight != "" {
+		cfg.Preflight = strings.ToLower(o.preflight)
 	}
 	if o.connectTimeout != "" {
 		cfg.ConnectTimeoutRaw = o.connectTimeout
@@ -269,6 +368,8 @@ func (c CLI) loadCheck(o checkOptions) (config.Config, model.Protocol, output.Fo
 	}
 	if len(o.targets) > 0 {
 		cfg.Targets = []string(o.targets)
+		cfg.TargetRules = nil
+		cfg.TargetLabels = nil
 	}
 	if o.dataDir != "" {
 		cfg.DataDir = o.dataDir
@@ -343,6 +444,9 @@ func (c CLI) loadCheck(o checkOptions) (config.Config, model.Protocol, output.Fo
 			return cfg, "", "", false, errors.New("output-status is invalid")
 		}
 	}
+	if len(o.label) > 64 || strings.IndexFunc(o.label, unicode.IsControl) >= 0 {
+		return cfg, "", "", false, errors.New("label must contain at most 64 safe characters")
+	}
 	return cfg, p, f, color, nil
 }
 
@@ -413,10 +517,34 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 	if o.requireSuccess && o.requireCount < 1 {
 		o.requireCount = 1
 	}
+	if o.checkpointOutput != "" && o.resumeCheckpoint != "" {
+		fmt.Fprintln(c.Stderr, "checkpoint and resume are mutually exclusive")
+		return ExitUsage
+	}
+	if o.resumeCheckpoint != "" && o.workingOutput != "" {
+		fmt.Fprintln(c.Stderr, "working-output cannot reconstruct credentials from a redacted resume checkpoint")
+		return ExitUsage
+	}
+	var qualityPolicy *qualitypkg.Policy
+	if o.qualityPolicy != "" {
+		loaded, loadErr := qualitypkg.Load(o.qualityPolicy)
+		if loadErr != nil {
+			fmt.Fprintln(c.Stderr, "quality policy error:", loadErr)
+			return ExitUsage
+		}
+		qualityPolicy = &loaded
+	}
+	if o.checkpointSync < 1 || o.checkpointSync > 100_000 {
+		fmt.Fprintln(c.Stderr, "checkpoint-sync must be between 1 and 100000")
+		return ExitUsage
+	}
 	cfg, proto, outFmt, color, err := c.loadCheck(o)
 	if err != nil {
 		fmt.Fprintln(c.Stderr, "configuration error:", err)
 		return ExitUsage
+	}
+	if o.label == "" && cfg.ScenarioName != "" {
+		o.label = cfg.ScenarioName
 	}
 	format, formatErr := inputpkg.ParseFormat(o.inputFormat)
 	if formatErr != nil {
@@ -436,8 +564,39 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	checker := engine.NewChecker(cfg)
+	checker.Metadata = metadataProvider
+	checker.Label = o.label
+	if err := checker.ConfigureCABundles(cfg.CABundle, cfg.ProxyCABundle); err != nil {
+		fmt.Fprintln(c.Stderr, "TLS configuration error:", err)
+		return ExitUsage
+	}
+	var targetHealth map[string]model.TargetHealth
+	if cfg.Preflight != "off" {
+		targetHealth = checker.Preflight(ctx)
+		failed := false
+		healthTargets := make([]string, 0, len(targetHealth))
+		for target := range targetHealth {
+			healthTargets = append(healthTargets, target)
+		}
+		sort.Strings(healthTargets)
+		for _, target := range healthTargets {
+			health := targetHealth[target]
+			if o.verbose || health.Status != "ok" {
+				fmt.Fprintf(c.Stderr, "preflight target=%s status=%s http=%d latency=%.1fms code=%s\n", target, health.Status, health.HTTPStatus, health.LatencyMS, health.Code)
+			}
+			if health.Status != "ok" {
+				failed = true
+			}
+		}
+		if failed && cfg.Preflight == "strict" {
+			fmt.Fprintln(c.Stderr, "strict preflight failed; no proxy validation was started")
+			return ExitOperational
+		}
+	}
 	jobs := make(chan model.Proxy, cfg.QueueSize)
 	var scheduled atomic.Int64
+	var resumed atomic.Int64
 	var parserFinished atomic.Bool
 	parseErr := make(chan error, 1)
 	statsCh := make(chan model.InputStats, 1)
@@ -452,8 +611,82 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 		fmt.Fprintln(c.Stderr, "standard input may be specified only once")
 		return ExitUsage
 	}
+	checkpointPath := o.checkpointOutput
+	resumeCheckpoint := false
+	if o.resumeCheckpoint != "" {
+		checkpointPath = o.resumeCheckpoint
+		resumeCheckpoint = true
+	}
+	var checkpoint *store.Checkpoint
+	completed := map[string]struct{}{}
+	checkpointExisted := false
+	if checkpointPath != "" {
+		if _, statErr := os.Lstat(checkpointPath); statErr == nil {
+			checkpointExisted = true
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			fmt.Fprintln(c.Stderr, "checkpoint error:", statErr)
+			return ExitUsage
+		}
+		for _, name := range files {
+			if name == "-" {
+				continue
+			}
+			same, sameErr := samePath(name, checkpointPath)
+			if sameErr != nil {
+				fmt.Fprintln(c.Stderr, "checkpoint error:", sameErr)
+				return ExitUsage
+			}
+			if same {
+				fmt.Fprintln(c.Stderr, "checkpoint must not overwrite an input file")
+				return ExitUsage
+			}
+		}
+		for _, outputPath := range []string{o.workingOutput, o.summaryOutput, o.junitOutput} {
+			if outputPath == "" {
+				continue
+			}
+			same, sameErr := samePath(outputPath, checkpointPath)
+			if sameErr != nil {
+				fmt.Fprintln(c.Stderr, "checkpoint error:", sameErr)
+				return ExitUsage
+			}
+			if same {
+				fmt.Fprintln(c.Stderr, "checkpoint, working output, and summary output must use different files")
+				return ExitUsage
+			}
+		}
+	}
 	var working *secureOutput
 	var summaryOutput *secureOutput
+	var junitOutput *secureOutput
+	outputPaths := []string{o.workingOutput, o.summaryOutput, o.junitOutput, checkpointPath}
+	for i, left := range outputPaths {
+		if left == "" {
+			continue
+		}
+		for _, right := range outputPaths[i+1:] {
+			if right == "" {
+				continue
+			}
+			same, sameErr := samePath(left, right)
+			if sameErr != nil {
+				fmt.Fprintln(c.Stderr, "output path error:", sameErr)
+				return ExitUsage
+			}
+			if same {
+				fmt.Fprintln(c.Stderr, "checkpoint, working, summary, and JUnit outputs must use different files")
+				return ExitUsage
+			}
+		}
+	}
+	if checkpointPath != "" {
+		checkpoint, completed, err = store.OpenCheckpoint(checkpointPath, resumeCheckpoint, o.forceWorking, o.checkpointSync, cfg.MaxInputEntries)
+		if err != nil {
+			fmt.Fprintln(c.Stderr, "checkpoint error:", err)
+			return ExitOperational
+		}
+		defer checkpoint.Close()
+	}
 	if o.workingOutput != "" {
 		for _, name := range files {
 			if name == "-" {
@@ -509,12 +742,38 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 		}
 		defer summaryOutput.Abort()
 	}
+	if o.junitOutput != "" {
+		for _, name := range files {
+			if name == "-" {
+				continue
+			}
+			same, sameErr := samePath(name, o.junitOutput)
+			if sameErr != nil {
+				fmt.Fprintln(c.Stderr, "JUnit output error:", sameErr)
+				return ExitUsage
+			}
+			if same {
+				fmt.Fprintln(c.Stderr, "JUnit output must not overwrite an input file")
+				return ExitUsage
+			}
+		}
+		junitOutput, err = openSecureOutput(o.junitOutput, o.forceWorking)
+		if err != nil {
+			fmt.Fprintln(c.Stderr, "JUnit output error:", err)
+			return ExitOperational
+		}
+		defer junitOutput.Abort()
+	}
 	go func() {
 		defer close(jobs)
 		defer parserFinished.Store(true)
-		parser := inputpkg.New(inputpkg.Options{Format: format, DefaultProtocol: proto, Source: "input", MaxBytes: cfg.MaxInputBytes, Deduplicate: !o.noDeduplicate})
+		parser := inputpkg.New(inputpkg.Options{Format: format, DefaultProtocol: proto, Source: "input", MaxBytes: cfg.MaxInputBytes, MaxEntries: cfg.MaxInputEntries, Deduplicate: !o.noDeduplicate})
 		warnedCredentialFiles := map[string]struct{}{}
 		emit := func(p model.Proxy) error {
+			if _, done := completed[p.Key()]; done {
+				resumed.Add(1)
+				return nil
+			}
 			if p.Credentials != nil && p.Source != "stdin" {
 				if _, warned := warnedCredentialFiles[p.Source]; !warned {
 					warnedCredentialFiles[p.Source] = struct{}{}
@@ -564,8 +823,6 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 		statsCh <- parser.Stats
 		parseErr <- e
 	}()
-	checker := engine.NewChecker(cfg)
-	checker.Metadata = metadataProvider
 	runner := engine.Engine{Workers: cfg.Concurrency, QueueSize: cfg.QueueSize, Processor: checker}
 	results := runner.Run(ctx, jobs)
 	writer := output.New(c.Stdout, outFmt, color)
@@ -579,8 +836,83 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 		defer history.Abort()
 	}
 	start := time.Now()
-	summary := model.RunSummary{SchemaVersion: model.SchemaVersion, Configuration: runConfiguration(cfg, proto, o), StartedAt: start.UTC(), StatusCount: map[model.Status]int{}, FailureCodes: map[string]int{}, FailureStages: map[model.Stage]int{}, Targets: map[string]model.TargetSummary{}}
+	summary := model.RunSummary{SchemaVersion: model.SchemaVersion, Configuration: runConfiguration(cfg, proto, o), StartedAt: start.UTC(), StatusCount: map[model.Status]int{}, FailureCodes: map[string]int{}, FailureStages: map[model.Stage]int{}, Targets: map[string]model.TargetSummary{}, TargetHealth: targetHealth}
 	latencies := metrics.NewHistogram(1, 300000)
+	handleResult := func(r model.Result, writeCheckpoint bool) error {
+		if writeCheckpoint && checkpoint != nil {
+			if err := checkpoint.Write(r); err != nil {
+				return fmt.Errorf("checkpoint: %w", err)
+			}
+		}
+		showResult := !o.quiet && (o.outputStatus == "all" || o.outputStatus == string(r.Status))
+		if forceDetailed && showResult {
+			if err := output.WriteDetailed(c.Stdout, r); err != nil {
+				return fmt.Errorf("output: %w", err)
+			}
+		} else if showResult {
+			if err := writer.WriteResult(r); err != nil {
+				return fmt.Errorf("output: %w", err)
+			}
+		}
+		if history != nil {
+			if err := history.Write(r); err != nil {
+				return fmt.Errorf("history: %w", err)
+			}
+		}
+		summary.Processed++
+		summary.StatusCount[r.Status]++
+		switch r.Status {
+		case model.StatusOK:
+			summary.Successful++
+			if working != nil {
+				if err := working.WriteLine(r.InputProxy); err != nil {
+					return fmt.Errorf("working output: %w", err)
+				}
+			}
+		case model.StatusInconclusive:
+			summary.Inconclusive++
+		case model.StatusUnreliable:
+			summary.Unreliable++
+		default:
+			summary.Failed++
+		}
+		for _, observation := range r.Observations {
+			summary.Attempts++
+			target := summary.Targets[observation.Target]
+			target.Attempts++
+			target.TotalMS += observation.Timings.TotalMS
+			switch observation.Status {
+			case model.StatusOK:
+				target.Successful++
+				latencies.Observe(observation.Timings.TotalMS)
+			case model.StatusInconclusive:
+				target.Inconclusive++
+			default:
+				target.Failed++
+			}
+			if observation.Status == model.StatusTimeout {
+				summary.Timeouts++
+				target.Timeouts++
+			}
+			if observation.Status != model.StatusOK {
+				if observation.Code != "" {
+					summary.FailureCodes[observation.Code]++
+				}
+				if observation.Stage != "" {
+					summary.FailureStages[observation.Stage]++
+				}
+			}
+			summary.Targets[observation.Target] = target
+		}
+		return nil
+	}
+	if resumeCheckpoint {
+		if err := store.ReadResults(checkpointPath, func(result model.Result) error { return handleResult(result, false) }); err != nil {
+			fmt.Fprintln(c.Stderr, "resume checkpoint error:", err)
+			return ExitOperational
+		}
+		summary.Restored = summary.Processed
+	}
 	var progressC <-chan time.Time
 	var progressTicker *time.Ticker
 	if o.verbose {
@@ -591,7 +923,8 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 	for results != nil {
 		select {
 		case <-progressC:
-			pending := scheduled.Load() - int64(summary.Processed)
+			processedNew := summary.Processed - summary.Restored
+			pending := scheduled.Load() - int64(processedNew)
 			if pending < 0 {
 				pending = 0
 			}
@@ -599,80 +932,19 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 			if parserFinished.Load() {
 				ingest = "done"
 			}
-			fmt.Fprintf(c.Stderr, "processed=%d scheduled=%d pending=%d ingest=%s ok=%d unreliable=%d failed=%d inconclusive=%d timeouts=%d rate=%.1f/s elapsed=%s\n", summary.Processed, scheduled.Load(), pending, ingest, summary.Successful, summary.Unreliable, summary.Failed, summary.Inconclusive, summary.Timeouts, float64(summary.Processed)/time.Since(start).Seconds(), time.Since(start).Round(100*time.Millisecond))
+			fmt.Fprintf(c.Stderr, "processed_new=%d restored=%d scheduled=%d pending=%d ingest=%s ok=%d unreliable=%d failed=%d inconclusive=%d timeouts=%d rate=%.1f/s elapsed=%s\n", processedNew, summary.Restored, scheduled.Load(), pending, ingest, summary.Successful, summary.Unreliable, summary.Failed, summary.Inconclusive, summary.Timeouts, float64(processedNew)/time.Since(start).Seconds(), time.Since(start).Round(100*time.Millisecond))
 			continue
 		case r, ok := <-results:
 			if !ok {
 				results = nil
 				continue
 			}
-			showResult := !o.quiet && (o.outputStatus == "all" || o.outputStatus == string(r.Status))
-			if forceDetailed && showResult {
-				if err := output.WriteDetailed(c.Stdout, r); err != nil {
-					if errors.Is(err, syscall.EPIPE) {
-						return ExitOK
-					}
-					fmt.Fprintln(c.Stderr, "output error:", err)
-					return ExitOperational
+			if err := handleResult(r, true); err != nil {
+				if errors.Is(err, syscall.EPIPE) {
+					return ExitOK
 				}
-			} else if showResult {
-				if err := writer.WriteResult(r); err != nil {
-					if errors.Is(err, syscall.EPIPE) {
-						return ExitOK
-					}
-					fmt.Fprintln(c.Stderr, "output error:", err)
-					return ExitOperational
-				}
-			}
-			if history != nil {
-				if err := history.Write(r); err != nil {
-					fmt.Fprintln(c.Stderr, "history error:", err)
-					return ExitOperational
-				}
-			}
-			summary.Processed++
-			summary.StatusCount[r.Status]++
-			if r.Status == model.StatusOK {
-				summary.Successful++
-				if working != nil {
-					if err := working.WriteLine(r.InputProxy); err != nil {
-						fmt.Fprintln(c.Stderr, "working output error:", err)
-						return ExitOperational
-					}
-				}
-			} else if r.Status == model.StatusInconclusive {
-				summary.Inconclusive++
-			} else if r.Status == model.StatusUnreliable {
-				summary.Unreliable++
-			} else {
-				summary.Failed++
-			}
-			for _, ob := range r.Observations {
-				target := summary.Targets[ob.Target]
-				target.Attempts++
-				target.TotalMS += ob.Timings.TotalMS
-				if ob.Status == model.StatusOK {
-					target.Successful++
-				} else if ob.Status == model.StatusInconclusive {
-					target.Inconclusive++
-				} else {
-					target.Failed++
-				}
-				if ob.Status == model.StatusTimeout {
-					summary.Timeouts++
-					target.Timeouts++
-				}
-				if ob.Status == model.StatusOK {
-					latencies.Observe(ob.Timings.TotalMS)
-				} else {
-					if ob.Code != "" {
-						summary.FailureCodes[ob.Code]++
-					}
-					if ob.Stage != "" {
-						summary.FailureStages[ob.Stage]++
-					}
-				}
-				summary.Targets[ob.Target] = target
+				fmt.Fprintln(c.Stderr, err)
+				return ExitOperational
 			}
 		}
 	}
@@ -681,9 +953,28 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 		return ExitOperational
 	}
 	summary.Input = <-statsCh
+	summary.Input.Resumed = int(resumed.Load())
 	if err := <-parseErr; err != nil && !errors.Is(err, context.Canceled) {
 		fmt.Fprintln(c.Stderr, "input error:", err)
 		return ExitOperational
+	}
+	if checkpoint != nil {
+		if err := checkpoint.Close(); err != nil {
+			fmt.Fprintln(c.Stderr, "checkpoint error:", err)
+			return ExitOperational
+		}
+	}
+	if ctx.Err() != nil {
+		return ExitInterrupted
+	}
+	if summary.Input.Accepted == 0 {
+		if checkpointPath != "" && !resumeCheckpoint && !checkpointExisted {
+			if removeErr := os.Remove(checkpointPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				fmt.Fprintln(c.Stderr, "checkpoint cleanup error:", removeErr)
+				return ExitOperational
+			}
+		}
+		return ExitNoValidInput
 	}
 	summary.FinishedAt = time.Now().UTC()
 	summary.LatencyP50MS = latencies.Percentile(.50)
@@ -691,7 +982,7 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 	summary.LatencyP99MS = latencies.Percentile(.99)
 	summary.DurationMS = float64(time.Since(start).Microseconds()) / 1000
 	if summary.DurationMS > 0 {
-		summary.RatePerSec = float64(summary.Processed) / (summary.DurationMS / 1000)
+		summary.RatePerSec = float64(summary.Processed-summary.Restored) / (summary.DurationMS / 1000)
 	}
 	for name, target := range summary.Targets {
 		if target.Attempts > 0 {
@@ -700,11 +991,26 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 		}
 		summary.Targets[name] = target
 	}
-	if ctx.Err() != nil {
-		return ExitInterrupted
+	qualityPassed := true
+	if qualityPolicy != nil {
+		report := qualitypkg.Evaluate(*qualityPolicy, summary)
+		summary.Quality = &report
+		for _, check := range report.Checks {
+			if !check.Passed {
+				fmt.Fprintf(c.Stderr, "quality gate failed: %s actual=%g expected %s %g\n", check.Name, check.Actual, check.Operator, check.Expected)
+			}
+		}
 	}
-	if summary.Input.Accepted == 0 {
-		return ExitNoValidInput
+	if o.requireCount > 0 {
+		if summary.Quality == nil {
+			summary.Quality = &model.QualityReport{Passed: true}
+		}
+		passed := summary.Successful >= o.requireCount
+		summary.Quality.Checks = append(summary.Quality.Checks, model.QualityCheck{Name: "require_count", Passed: passed, Actual: float64(summary.Successful), Operator: ">=", Expected: float64(o.requireCount)})
+		summary.Quality.Passed = summary.Quality.Passed && passed
+	}
+	if summary.Quality != nil {
+		qualityPassed = summary.Quality.Passed
 	}
 	if history != nil {
 		summary.RunID = history.ID
@@ -732,13 +1038,26 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 		}
 		fmt.Fprintf(c.Stderr, "saved %d validated proxies to %s\n", summary.Successful, o.workingOutput)
 	}
+	if junitOutput != nil {
+		payload, junitErr := qualitypkg.JUnit(summary)
+		if junitErr == nil {
+			junitErr = junitOutput.WriteBytes(payload)
+		}
+		if junitErr == nil {
+			junitErr = junitOutput.Commit()
+		}
+		if junitErr != nil {
+			fmt.Fprintln(c.Stderr, "JUnit output error:", junitErr)
+			return ExitOperational
+		}
+	}
 	if o.verbose || c.IsTerminal {
-		fmt.Fprintf(c.Stderr, "read=%d accepted=%d duplicates=%d rejected=%d processed=%d ok=%d unreliable=%d failed=%d inconclusive=%d elapsed=%s rate=%.1f/s p50=%.0fms p95=%.0fms p99=%.0fms\n", summary.Input.Read, summary.Input.Accepted, summary.Input.Duplicates, summary.Input.Rejected, summary.Processed, summary.Successful, summary.Unreliable, summary.Failed, summary.Inconclusive, time.Since(start).Round(time.Millisecond), summary.RatePerSec, summary.LatencyP50MS, summary.LatencyP95MS, summary.LatencyP99MS)
+		fmt.Fprintf(c.Stderr, "read=%d accepted=%d duplicates=%d resumed=%d rejected=%d processed=%d ok=%d unreliable=%d failed=%d inconclusive=%d elapsed=%s rate=%.1f/s p50=%.0fms p95=%.0fms p99=%.0fms\n", summary.Input.Read, summary.Input.Accepted, summary.Input.Duplicates, resumed.Load(), summary.Input.Rejected, summary.Processed, summary.Successful, summary.Unreliable, summary.Failed, summary.Inconclusive, time.Since(start).Round(time.Millisecond), summary.RatePerSec, summary.LatencyP50MS, summary.LatencyP95MS, summary.LatencyP99MS)
 		if top := topCounts(summary.FailureCodes, 5); top != "" {
 			fmt.Fprintln(c.Stderr, "top_failures="+top)
 		}
 	}
-	if summary.Successful < o.requireCount {
+	if summary.Successful < o.requireCount || !qualityPassed {
 		return ExitNoSuccess
 	}
 	return ExitOK
@@ -766,7 +1085,11 @@ func runConfiguration(cfg config.Config, proto model.Protocol, o checkOptions) m
 		MinResponseBytes: cfg.MinResponseBytes, MinThroughput: cfg.MinThroughputKBPS,
 		ContentRules:    len(cfg.RequireText) + len(cfg.RejectText) + len(cfg.ExpectJSON),
 		MetadataEnabled: cfg.MetadataFile != "",
-		Deduplicate:     !o.noDeduplicate, ValidationTarget: targets,
+		TargetMatrix:    cfg.TargetMatrix, TargetQuorum: cfg.TargetQuorum,
+		RotationSamples: cfg.RotationSamples, RotationInterval: cfg.RotationInterval.String(),
+		Preflight: cfg.Preflight, AutoConcurrency: cfg.AutoConcurrency,
+		Scenario: cfg.ScenarioName, Label: o.label,
+		Deduplicate: !o.noDeduplicate, MaxInputEntries: cfg.MaxInputEntries, ValidationTarget: targets,
 	}
 }
 
@@ -1010,12 +1333,13 @@ func (c CLI) importCmd(args []string) int {
 	protoText := fs.String("protocol", "http", "default protocol")
 	outFmt := fs.String("format", "txt", "output: txt, jsonl")
 	max := fs.Int64("max-bytes", 256<<20, "maximum input bytes")
+	maxEntries := fs.Int("max-entries", 1_000_000, "maximum input records")
 	noDeduplicate := fs.Bool("no-deduplicate", false, "disable exact deduplication for bounded parser memory")
 	if ok, code := c.parseFlags(fs, buf, args); !ok {
 		return code
 	}
-	if *max < 1 {
-		fmt.Fprintln(c.Stderr, "max-bytes must be positive")
+	if *max < 1 || *maxEntries < 1 || *maxEntries > 50_000_000 {
+		fmt.Fprintln(c.Stderr, "max-bytes and max-entries must be within safe positive bounds")
 		return ExitUsage
 	}
 	if *outFmt != "txt" && *outFmt != "jsonl" {
@@ -1042,7 +1366,7 @@ func (c CLI) importCmd(args []string) int {
 		fmt.Fprintln(c.Stderr, "standard input may be specified only once")
 		return ExitUsage
 	}
-	parser := inputpkg.New(inputpkg.Options{Format: parsedInputFormat, DefaultProtocol: p, Source: "input", MaxBytes: *max, Deduplicate: !*noDeduplicate})
+	parser := inputpkg.New(inputpkg.Options{Format: parsedInputFormat, DefaultProtocol: p, Source: "input", MaxBytes: *max, MaxEntries: *maxEntries, Deduplicate: !*noDeduplicate})
 	emit := func(x model.Proxy) error {
 		if *outFmt == "jsonl" {
 			b, _ := json.Marshal(map[string]any{"id": x.Key(), "proxy": x.SafeURI(), "endpoint": x.Address(), "protocol": x.Protocol})
@@ -1104,7 +1428,8 @@ func emitInputSource(parser *inputpkg.Parser, reader io.Reader, format inputpkg.
 
 type resultFilter struct {
 	status, protocol, search, exitIP, anonymity string
-	country, asn, networkType                   string
+	country, asn, networkType, label, rotation  string
+	minUniqueExits                              int
 	maxLatency, minScore, minThroughput         float64
 }
 
@@ -1116,6 +1441,15 @@ func matchResult(r model.Result, f resultFilter) bool {
 		return false
 	}
 	if f.search != "" && !strings.Contains(strings.ToLower(r.Endpoint), strings.ToLower(f.search)) {
+		return false
+	}
+	if f.label != "" && !strings.EqualFold(r.Label, f.label) {
+		return false
+	}
+	if f.rotation != "" && !strings.EqualFold(r.Rotation.Classification, f.rotation) {
+		return false
+	}
+	if f.minUniqueExits > 0 && r.Rotation.UniqueExitIPs < f.minUniqueExits {
 		return false
 	}
 	if f.exitIP != "" || f.anonymity != "" || f.country != "" || f.asn != "" || f.networkType != "" {
@@ -1171,6 +1505,9 @@ func normalizeASNFilter(value string) string {
 }
 
 func validateResultFilter(f resultFilter) error {
+	if f.minUniqueExits < 0 {
+		return errors.New("min-unique-exits must be non-negative")
+	}
 	if math.IsNaN(f.maxLatency) || math.IsInf(f.maxLatency, 0) || f.maxLatency < 0 {
 		return errors.New("max-latency must be a finite non-negative number")
 	}
@@ -1196,6 +1533,9 @@ func (c CLI) results(args []string) int {
 	country := fs.String("country", "", "country code or name filter")
 	asn := fs.String("asn", "", "ASN filter, for example AS15169 or 15169")
 	networkType := fs.String("network-type", "", "metadata network type filter")
+	label := fs.String("label", "", "pool label filter")
+	rotation := fs.String("rotation", "", "rotation classification filter")
+	minUniqueExits := fs.Int("min-unique-exits", 0, "minimum observed unique exit IPs")
 	lat := fs.Float64("max-latency", 0, "maximum median milliseconds")
 	minScore := fs.Float64("min-score", 0, "minimum score from 0 to 100")
 	minThroughput := fs.Float64("min-throughput-kbps", 0, "minimum observed response throughput")
@@ -1210,7 +1550,7 @@ func (c CLI) results(args []string) int {
 		fmt.Fprintln(c.Stderr, "limit and max-load must be positive")
 		return ExitUsage
 	}
-	filter := resultFilter{status: *status, protocol: *proto, search: *search, exitIP: *exitIP, anonymity: *anonymity, country: *country, asn: *asn, networkType: *networkType, maxLatency: *lat, minScore: *minScore, minThroughput: *minThroughput}
+	filter := resultFilter{status: *status, protocol: *proto, search: *search, exitIP: *exitIP, anonymity: *anonymity, country: *country, asn: *asn, networkType: *networkType, label: *label, rotation: *rotation, minUniqueExits: *minUniqueExits, maxLatency: *lat, minScore: *minScore, minThroughput: *minThroughput}
 	if err := validateResultFilter(filter); err != nil {
 		fmt.Fprintln(c.Stderr, err)
 		return ExitUsage
@@ -1236,8 +1576,8 @@ func (c CLI) results(args []string) int {
 			return nil
 		})
 	} else {
-		if *sortBy != "endpoint" && *sortBy != "status" && *sortBy != "score" && *sortBy != "latency" {
-			fmt.Fprintln(c.Stderr, "sort must be endpoint, status, score, or latency")
+		if *sortBy != "endpoint" && *sortBy != "status" && *sortBy != "score" && *sortBy != "latency" && *sortBy != "unique-exits" {
+			fmt.Fprintln(c.Stderr, "sort must be endpoint, status, score, latency, or unique-exits")
 			return ExitUsage
 		}
 		loaded := make([]model.Result, 0, minInt(*limit, 4096))
@@ -1299,6 +1639,11 @@ func resultLess(a, b model.Result, field string) bool {
 			bv = *b.Score.Value
 		}
 		return av < bv
+	case "unique-exits":
+		av, bv := 0, 0
+		av = a.Rotation.UniqueExitIPs
+		bv = b.Rotation.UniqueExitIPs
+		return av < bv
 	}
 	return false
 }
@@ -1307,6 +1652,31 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func recommendedConcurrency() int {
+	recommended := runtime.NumCPU() * 64
+	if recommended < 32 {
+		recommended = 32
+	}
+	var limit syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &limit); err == nil {
+		fileBound := int(limit.Cur/4) - 32
+		if fileBound > 0 && recommended > fileBound {
+			recommended = fileBound
+		}
+	}
+	if recommended > 1024 {
+		recommended = 1024
+	}
+	return recommended
 }
 
 func topCounts(counts map[string]int, limit int) string {
@@ -1348,6 +1718,9 @@ func (c CLI) export(args []string) int {
 	country := fs.String("country", "", "country code or name filter")
 	asn := fs.String("asn", "", "ASN filter")
 	networkType := fs.String("network-type", "", "metadata network type filter")
+	label := fs.String("label", "", "pool label filter")
+	rotation := fs.String("rotation", "", "rotation classification filter")
+	minUniqueExits := fs.Int("min-unique-exits", 0, "minimum observed unique exit IPs")
 	lat := fs.Float64("max-latency", 0, "maximum median milliseconds")
 	minScore := fs.Float64("min-score", 0, "minimum score from 0 to 100")
 	minThroughput := fs.Float64("min-throughput-kbps", 0, "minimum observed response throughput")
@@ -1365,7 +1738,7 @@ func (c CLI) export(args []string) int {
 		fmt.Fprintln(c.Stderr, err)
 		return ExitUsage
 	}
-	filter := resultFilter{status: *status, protocol: *proto, search: *search, exitIP: *exitIP, anonymity: *anonymity, country: *country, asn: *asn, networkType: *networkType, maxLatency: *lat, minScore: *minScore, minThroughput: *minThroughput}
+	filter := resultFilter{status: *status, protocol: *proto, search: *search, exitIP: *exitIP, anonymity: *anonymity, country: *country, asn: *asn, networkType: *networkType, label: *label, rotation: *rotation, minUniqueExits: *minUniqueExits, maxLatency: *lat, minScore: *minScore, minThroughput: *minThroughput}
 	if err := validateResultFilter(filter); err != nil {
 		fmt.Fprintln(c.Stderr, err)
 		return ExitUsage
@@ -1456,10 +1829,124 @@ func (c CLI) stats(args []string) int {
 		b, _ := json.MarshalIndent(s, "", "  ")
 		fmt.Fprintln(c.Stdout, string(b))
 	} else {
-		fmt.Fprintf(c.Stdout, "run=%s processed=%d ok=%d unreliable=%d failed=%d inconclusive=%d timeouts=%d rate=%.1f/s duration=%.0fms p50=%.0fms p95=%.0fms p99=%.0fms\n", s.RunID, s.Processed, s.Successful, s.Unreliable, s.Failed, s.Inconclusive, s.Timeouts, s.RatePerSec, s.DurationMS, s.LatencyP50MS, s.LatencyP95MS, s.LatencyP99MS)
+		fmt.Fprintf(c.Stdout, "run=%s processed=%d restored=%d attempts=%d ok=%d unreliable=%d failed=%d inconclusive=%d timeouts=%d rate=%.1f/s duration=%.0fms p50=%.0fms p95=%.0fms p99=%.0fms\n", s.RunID, s.Processed, s.Restored, s.Attempts, s.Successful, s.Unreliable, s.Failed, s.Inconclusive, s.Timeouts, s.RatePerSec, s.DurationMS, s.LatencyP50MS, s.LatencyP95MS, s.LatencyP99MS)
 		if top := topCounts(s.FailureCodes, 10); top != "" {
 			fmt.Fprintln(c.Stdout, "top_failures="+top)
 		}
+	}
+	return ExitOK
+}
+
+func (c CLI) history(args []string) int {
+	fs, buf := c.newFlagSet("history")
+	data := fs.String("data-dir", config.Defaults().DataDir, "history directory")
+	runLimit := fs.Int("runs", 20, "newest saved runs to analyze")
+	resultLimit := fs.Int("max-load", 1_000_000, "maximum results to read")
+	limit := fs.Int("limit", 1000, "maximum trend rows")
+	search := fs.String("search", "", "endpoint substring")
+	jsonOut := fs.Bool("json", false, "emit JSON")
+	if ok, code := c.parseFlags(fs, buf, args); !ok {
+		return code
+	}
+	if *runLimit < 1 || *runLimit > 10_000 || *resultLimit < 1 || *resultLimit > 10_000_000 || *limit < 1 || *limit > 1_000_000 {
+		fmt.Fprintln(c.Stderr, "runs, max-load, or limit is outside safe bounds")
+		return ExitUsage
+	}
+	runs, err := store.ListRuns(*data, *runLimit)
+	if err != nil {
+		fmt.Fprintln(c.Stderr, err)
+		return ExitOperational
+	}
+	if len(runs) == 0 {
+		fmt.Fprintln(c.Stderr, "no saved runs")
+		return ExitOperational
+	}
+	analyzer := historypkg.New()
+	loaded := 0
+	for i := len(runs) - 1; i >= 0; i-- {
+		path, resolveErr := store.ResolveRun(*data, runs[i].RunID)
+		if resolveErr != nil {
+			fmt.Fprintln(c.Stderr, resolveErr)
+			return ExitOperational
+		}
+		if readErr := store.ReadResults(path, func(result model.Result) error {
+			loaded++
+			if loaded > *resultLimit {
+				return errors.New("history result limit exceeded")
+			}
+			analyzer.Add(result)
+			return nil
+		}); readErr != nil {
+			fmt.Fprintln(c.Stderr, readErr)
+			return ExitOperational
+		}
+	}
+	trends := analyzer.Results()
+	filtered := trends[:0]
+	for _, trend := range trends {
+		if *search == "" || strings.Contains(strings.ToLower(trend.Endpoint), strings.ToLower(*search)) {
+			filtered = append(filtered, trend)
+			if len(filtered) >= *limit {
+				break
+			}
+		}
+	}
+	if *jsonOut {
+		encoder := json.NewEncoder(c.Stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(filtered); err != nil {
+			return ExitOperational
+		}
+		return ExitOK
+	}
+	fmt.Fprintln(c.Stdout, "AVAIL   CHECKS  STREAK  CHANGES  EXITS  MEDIAN    ENDPOINT")
+	for _, trend := range filtered {
+		fmt.Fprintf(c.Stdout, "%6.1f%%  %6d  %6d  %7d  %5d  %7.0fms  %s\n", trend.Availability*100, trend.Checks, trend.ConsecutiveSuccess, trend.StatusChanges, trend.UniqueExitIPs, trend.MedianLatencyMS, trend.Endpoint)
+	}
+	return ExitOK
+}
+
+func (c CLI) pool(args []string) int {
+	fs, buf := c.newFlagSet("pool")
+	run := fs.String("run", "latest", "run ID or path")
+	data := fs.String("data-dir", config.Defaults().DataDir, "history directory")
+	maxLoad := fs.Int("max-load", 1_000_000, "maximum results to load")
+	jsonOut := fs.Bool("json", false, "emit JSON")
+	if ok, code := c.parseFlags(fs, buf, args); !ok {
+		return code
+	}
+	if *maxLoad < 1 || *maxLoad > 10_000_000 {
+		fmt.Fprintln(c.Stderr, "max-load is outside safe bounds")
+		return ExitUsage
+	}
+	path, err := store.ResolveRun(*data, *run)
+	if err != nil {
+		fmt.Fprintln(c.Stderr, err)
+		return ExitOperational
+	}
+	results := make([]model.Result, 0, minInt(*maxLoad, 4096))
+	if err := store.ReadResults(path, func(result model.Result) error {
+		if len(results) >= *maxLoad {
+			return errors.New("pool result limit exceeded")
+		}
+		results = append(results, result)
+		return nil
+	}); err != nil {
+		fmt.Fprintln(c.Stderr, err)
+		return ExitOperational
+	}
+	pools := historypkg.Pools(results)
+	if *jsonOut {
+		encoder := json.NewEncoder(c.Stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(pools); err != nil {
+			return ExitOperational
+		}
+		return ExitOK
+	}
+	fmt.Fprintln(c.Stdout, "LABEL                 PROXIES  OK      EXITS  SUBNETS  ASNS  ASN_SHARE  MEDIAN")
+	for _, pool := range pools {
+		fmt.Fprintf(c.Stdout, "%-21s %7d  %6.1f%%  %5d  %7d  %4d  %8.1f%%  %.0fms\n", pool.Label, pool.Proxies, pool.SuccessRate*100, pool.UniqueExitIPs, pool.UniqueSubnets, pool.UniqueASNs, pool.ASNConcentration*100, pool.MedianLatencyMS)
 	}
 	return ExitOK
 }
@@ -1536,11 +2023,29 @@ func (c CLI) doctor(args []string) int {
 	} else {
 		fmt.Fprintln(c.Stdout, "resources      WARN", e)
 	}
+	var checker *engine.Checker
 	if err != nil {
 		fmt.Fprintln(c.Stdout, "configuration FAIL", err)
 		ok = false
 	} else {
 		fmt.Fprintln(c.Stdout, "configuration OK")
+		checker = engine.NewChecker(cfg)
+		if tlsErr := checker.ConfigureCABundles(cfg.CABundle, cfg.ProxyCABundle); tlsErr != nil {
+			fmt.Fprintln(c.Stdout, "TLS bundles    FAIL", tlsErr)
+			ok = false
+		} else {
+			fmt.Fprintln(c.Stdout, "TLS bundles    OK")
+		}
+		if cfg.MetadataFile != "" {
+			provider, metadataErr := metadatapkg.LoadCSV(cfg.MetadataFile)
+			if metadataErr != nil {
+				fmt.Fprintln(c.Stdout, "metadata       FAIL", metadataErr)
+				ok = false
+			} else {
+				fmt.Fprintf(c.Stdout, "metadata       OK  records=%d\n", provider.Records())
+			}
+		}
+		fmt.Fprintf(c.Stdout, "auto workers   OK  recommended=%d\n", recommendedConcurrency())
 	}
 	if d, err := os.MkdirTemp("", "relayprobe-doctor-"); err == nil {
 		_ = os.Remove(d)
@@ -1550,16 +2055,15 @@ func (c CLI) doctor(args []string) int {
 		ok = false
 	}
 	if *network && err == nil {
-		checker := engine.NewChecker(cfg)
 		for _, t := range cfg.Targets {
 			ctx, cancel := context.WithTimeout(context.Background(), cfg.ConnectTimeout)
 			_, e := checker.Policy.Resolve(ctx, t)
 			cancel()
 			if e != nil {
-				fmt.Fprintf(c.Stdout, "resolve %-30s FAIL %v\n", t, e)
+				fmt.Fprintf(c.Stdout, "resolve %-30s FAIL %v\n", sanitizedTarget(t), e)
 				ok = false
 			} else {
-				fmt.Fprintf(c.Stdout, "resolve %-30s OK\n", t)
+				fmt.Fprintf(c.Stdout, "resolve %-30s OK\n", sanitizedTarget(t))
 			}
 		}
 	}
@@ -1569,6 +2073,14 @@ func (c CLI) doctor(args []string) int {
 	return ExitOK
 }
 
+func sanitizedTarget(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "invalid-target"
+	}
+	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host) + "/"
+}
+
 type benchProcessor struct{ delay time.Duration }
 
 func (c CLI) completion(args []string) int {
@@ -1576,8 +2088,8 @@ func (c CLI) completion(args []string) int {
 		fmt.Fprintln(c.Stderr, "usage: relayprobe completion bash|zsh|fish")
 		return ExitUsage
 	}
-	commands := "check inspect import results runs export stats config doctor bench completion version help"
-	checkFlags := "--profile --format --input-format --protocol --concurrency --queue-size --per-target --rate --repeat --min-success-rate --min-response-bytes --min-throughput-kbps --require-text --reject-text --expect-json --baseline-ip --metadata-file --connect-timeout --request-timeout --dns-cache-ttl --retry-backoff --progress-interval --target --allow-host --allow-private-targets --allow-remote-dns --retry-permanent --stop-on-success --no-deduplicate --quiet --output-status --working-output --summary-output --force --save --data-dir --max-redirects --require-success --require-count --verbose --plain --color --config --help"
+	commands := "check inspect import results runs export stats history pool shard merge explore config doctor bench completion version help"
+	checkFlags := "--profile --format --input-format --protocol --concurrency --queue-size --per-target --rate --repeat --max-input-bytes --max-input-entries --min-success-rate --min-response-bytes --min-throughput-kbps --require-text --reject-text --expect-json --expect-sha256 --baseline-ip --metadata-file --ca-bundle --proxy-ca-bundle --scenario --label --target-matrix --target-quorum --rotation-samples --rotation-interval --preflight --connect-timeout --request-timeout --dns-cache-ttl --retry-backoff --progress-interval --target --allow-host --allow-private-targets --allow-remote-dns --retry-permanent --stop-on-success --no-deduplicate --quiet --output-status --working-output --summary-output --checkpoint --resume --checkpoint-sync --policy --junit-output --force --save --data-dir --max-redirects --require-success --require-count --verbose --plain --color --config --help"
 	switch args[0] {
 	case "bash":
 		fmt.Fprintf(c.Stdout, `_relayprobe() {

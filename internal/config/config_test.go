@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -91,6 +92,7 @@ func TestCompleteEnvironmentConfiguration(t *testing.T) {
 		"RELAYPROBE_MIN_SUCCESS_RATE":         "0.75",
 		"RELAYPROBE_MAX_REDIRECTS":            "1",
 		"RELAYPROBE_MAX_INPUT_BYTES":          "4096",
+		"RELAYPROBE_MAX_INPUT_ENTRIES":        "1234",
 		"RELAYPROBE_MAX_RESPONSE_BYTES":       "2048",
 		"RELAYPROBE_MIN_RESPONSE_BYTES":       "1024",
 		"RELAYPROBE_MIN_THROUGHPUT_KBPS":      "0",
@@ -107,6 +109,14 @@ func TestCompleteEnvironmentConfiguration(t *testing.T) {
 		"RELAYPROBE_REQUIRE_TEXT":             "expected marker,application/json",
 		"RELAYPROBE_REJECT_TEXT":              "access denied,captcha",
 		"RELAYPROBE_EXPECT_JSON":              "status=ok,data.region=eu",
+		"RELAYPROBE_EXPECTED_BODY_SHA256":     strings.Repeat("a", 64),
+		"RELAYPROBE_CA_BUNDLE":                "/tmp/destination-ca.pem",
+		"RELAYPROBE_PROXY_CA_BUNDLE":          "/tmp/proxy-ca.pem",
+		"RELAYPROBE_TARGET_MATRIX":            "true",
+		"RELAYPROBE_TARGET_QUORUM":            "1",
+		"RELAYPROBE_ROTATION_SAMPLES":         "3",
+		"RELAYPROBE_ROTATION_INTERVAL":        "2s",
+		"RELAYPROBE_PREFLIGHT":                "report",
 	}
 	for name, value := range values {
 		t.Setenv(name, value)
@@ -118,7 +128,7 @@ func TestCompleteEnvironmentConfiguration(t *testing.T) {
 	if c.Concurrency != 9 || c.QueueSize != 18 || c.PerTarget != 3 || c.RateLimit != 12.5 || c.Repeat != 4 || c.MinSuccessRate != 0.75 {
 		t.Fatalf("numeric environment not applied: %+v", c)
 	}
-	if c.MaxRedirects != 1 || c.MaxInputBytes != 4096 || c.MaxResponseBytes != 2048 || c.MinResponseBytes != 1024 || c.ProgressInterval != 750*time.Millisecond {
+	if c.MaxRedirects != 1 || c.MaxInputBytes != 4096 || c.MaxInputEntries != 1234 || c.MaxResponseBytes != 2048 || c.MinResponseBytes != 1024 || c.ProgressInterval != 750*time.Millisecond {
 		t.Fatalf("limits not applied: %+v", c)
 	}
 	if !c.AllowPrivate || !c.AllowRemoteDNS || !c.RetryPermanent || !c.StopOnSuccess || !c.Save {
@@ -136,11 +146,32 @@ func TestCompleteEnvironmentConfiguration(t *testing.T) {
 	if len(c.RequireText) != 2 || len(c.RejectText) != 2 || len(c.ExpectJSON) != 2 {
 		t.Fatalf("content rules not applied: require=%v reject=%v json=%v", c.RequireText, c.RejectText, c.ExpectJSON)
 	}
+	if !c.TargetMatrix || c.TargetQuorum != 1 || c.RotationSamples != 3 || c.RotationInterval != 2*time.Second || c.Preflight != "report" {
+		t.Fatalf("advanced environment not applied: %+v", c)
+	}
+	if c.ExpectedBodySHA != strings.Repeat("a", 64) || c.CABundle == "" || c.ProxyCABundle == "" {
+		t.Fatalf("TLS or integrity environment not applied: %+v", c)
+	}
 }
 
 func TestRejectsInvalidBooleanEnvironment(t *testing.T) {
 	t.Setenv("RELAYPROBE_ALLOW_REMOTE_DNS", "sometimes")
 	if _, err := Load(""); err == nil || !strings.Contains(err.Error(), "RELAYPROBE_ALLOW_REMOTE_DNS") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestRejectsExcessiveTargetMatrix(t *testing.T) {
+	c := Defaults()
+	c.TargetMatrix = true
+	c.RotationSamples = 50
+	c.Targets = make([]string, 21)
+	c.AllowedHosts = make([]string, 21)
+	for index := range c.Targets {
+		c.Targets[index] = fmt.Sprintf("https://target-%d.test/", index)
+		c.AllowedHosts[index] = fmt.Sprintf("target-%d.test", index)
+	}
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "1000-attempt") {
 		t.Fatalf("err=%v", err)
 	}
 }

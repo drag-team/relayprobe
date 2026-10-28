@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"crypto/rand"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
@@ -33,6 +34,7 @@ type Options struct {
 	DefaultProtocol model.Protocol
 	Source          string
 	MaxBytes        int64
+	MaxEntries      int
 	Deduplicate     bool
 }
 
@@ -55,7 +57,8 @@ type Rejection struct {
 
 type Parser struct {
 	opts      Options
-	seen      map[[12]byte]struct{}
+	seen      map[[16]byte]struct{}
+	dedupKey  [32]byte
 	usedBytes int64
 	Stats     model.InputStats
 }
@@ -64,10 +67,15 @@ func New(opts Options) *Parser {
 	if opts.MaxBytes <= 0 {
 		opts.MaxBytes = 256 << 20
 	}
+	if opts.MaxEntries <= 0 {
+		opts.MaxEntries = 1_000_000
+	}
 	if opts.DefaultProtocol == "" {
 		opts.DefaultProtocol = model.ProtocolHTTP
 	}
-	return &Parser{opts: opts, seen: make(map[[12]byte]struct{})}
+	p := &Parser{opts: opts, seen: make(map[[16]byte]struct{})}
+	_, _ = rand.Read(p.dedupKey[:])
+	return p
 }
 
 func ParseProxy(raw string, defaultProtocol model.Protocol) (model.Proxy, error) {
@@ -232,6 +240,9 @@ func MaybeDecompress(r io.Reader) (io.Reader, io.Closer, error) {
 
 func (p *Parser) accept(raw string, line int, emit func(model.Proxy) error, reject func(Rejection)) error {
 	p.Stats.Read++
+	if p.Stats.Read > p.opts.MaxEntries {
+		return fmt.Errorf("input exceeds %d-entry aggregate limit", p.opts.MaxEntries)
+	}
 	proxy, err := ParseProxy(raw, p.opts.DefaultProtocol)
 	if err != nil {
 		p.Stats.Rejected++
@@ -241,7 +252,7 @@ func (p *Parser) accept(raw string, line int, emit func(model.Proxy) error, reje
 		return nil
 	}
 	proxy.Source, proxy.Line = p.opts.Source, line
-	key := proxy.Identity()
+	key := proxy.DedupIdentity(p.dedupKey[:])
 	if p.opts.Deduplicate {
 		if _, ok := p.seen[key]; ok {
 			p.Stats.Duplicates++
@@ -470,11 +481,21 @@ func rawFromJSON(v any) string {
 			return s
 		}
 		if h, ok := x["host"].(string); ok {
-			raw := h + ":" + fmt.Sprint(x["port"])
+			protocol := ""
 			if s, ok := x["protocol"].(string); ok {
-				raw = s + "://" + raw
+				protocol = strings.ToLower(s)
 			}
-			return raw
+			host := net.JoinHostPort(h, fmt.Sprint(x["port"]))
+			if protocol == "" {
+				return host
+			}
+			u := &url.URL{Scheme: protocol, Host: host}
+			username, hasUsername := x["username"].(string)
+			password, hasPassword := x["password"].(string)
+			if hasUsername || hasPassword {
+				u.User = url.UserPassword(username, password)
+			}
+			return u.String()
 		}
 	}
 	return ""

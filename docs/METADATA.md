@@ -4,6 +4,12 @@ RelayProbe can enrich an observed exit IP from an operator-supplied CSV database
 Lookup is entirely local: no proxy, exit IP, target, or credential is sent to a
 metadata API.
 
+Native MaxMind DB (`.mmdb`) files are not currently read directly. Export or
+transform licensed data into the schema below without changing its license or
+provenance, and validate the result in a controlled workflow. This keeps the
+released binary dependency-free and avoids silently guessing vendor-specific
+record layouts.
+
 ## Schema
 
 The first row must be a header and must include `prefix`. Other recognized

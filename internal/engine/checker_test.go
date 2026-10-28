@@ -468,3 +468,37 @@ func TestReliabilityThresholdAndEarlyImpossibility(t *testing.T) {
 		}
 	}
 }
+
+func TestTargetMatrixQuorumAndLabels(t *testing.T) {
+	cfg := config.Defaults()
+	one, two := "http://one.test/health", "http://two.test/health"
+	cfg.Targets = []string{one, two}
+	cfg.AllowedHosts = []string{"one.test", "two.test"}
+	cfg.TargetLabels = map[string]string{one: "primary", two: "secondary"}
+	cfg.TargetMatrix = true
+	cfg.TargetQuorum = 1
+	cfg.Repeat = 2
+	cfg.MinSuccessRate = 1
+	cfg.RetryBackoff = 0
+	cfg.RequestTimeout = time.Second
+	checker := NewChecker(cfg)
+	checker.Policy.Resolver = fixedResolver{ips: []netip.Addr{netip.MustParseAddr("1.1.1.1")}}
+	checker.Connector.DialContext = pipeDial(func(conn net.Conn) {
+		reader := bufio.NewReader(conn)
+		_, _ = http.ReadRequest(reader)
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n")
+		request, _ := http.ReadRequest(reader)
+		status := "204 No Content"
+		if request != nil && request.Host == "two.test" {
+			status = "503 Service Unavailable"
+		}
+		_, _ = io.WriteString(conn, "HTTP/1.1 "+status+"\r\nContent-Length: 0\r\n\r\n")
+	})
+	result := checker.Check(context.Background(), model.Proxy{Protocol: model.ProtocolHTTP, Host: "proxy", Port: 80})
+	if result.Status != model.StatusOK || result.Attempts != 4 || len(result.TargetResults) != 2 {
+		t.Fatalf("result=%+v", result)
+	}
+	if result.TargetResults[0].Target != "primary" || !result.TargetResults[0].Qualified || result.TargetResults[1].Target != "secondary" || result.TargetResults[1].Qualified {
+		t.Fatalf("targets=%+v", result.TargetResults)
+	}
+}

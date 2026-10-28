@@ -3,7 +3,9 @@ package engine
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +22,7 @@ import (
 
 	"github.com/drag-team/relayprobe/internal/buildinfo"
 	"github.com/drag-team/relayprobe/internal/config"
+	"github.com/drag-team/relayprobe/internal/intel"
 	"github.com/drag-team/relayprobe/internal/model"
 	"github.com/drag-team/relayprobe/internal/policy"
 	"github.com/drag-team/relayprobe/internal/protocol"
@@ -42,11 +45,24 @@ type Checker struct {
 	requireText []string
 	rejectText  []string
 	expectJSON  []jsonExpectation
+	Label       string
+	targetRules map[string]compiledResponseRules
 }
 
 type jsonExpectation struct {
 	path     []string
 	expected string
+}
+
+type compiledResponseRules struct {
+	minHTTPStatus     int
+	maxHTTPStatus     int
+	minResponseBytes  int64
+	minThroughputKBPS float64
+	requireText       []string
+	rejectText        []string
+	expectJSON        []jsonExpectation
+	expectedBodySHA   string
 }
 
 type MetadataLookup interface {
@@ -62,7 +78,7 @@ type resolveEntry struct {
 
 func NewChecker(c config.Config) *Checker {
 	baseline, _ := netip.ParseAddr(c.AnonymityBaseline)
-	checker := &Checker{Config: c, Policy: policy.New(c.AllowPrivate, c.AllowedHosts), Connector: protocol.Connector{ConnectTimeout: c.ConnectTimeout, AllowRemoteDNS: c.AllowRemoteDNS}, targetSem: make(map[string]chan struct{}), resolved: make(map[string]*resolveEntry), baseline: baseline.Unmap()}
+	checker := &Checker{Config: c, Policy: policy.New(c.AllowPrivate, c.AllowedHosts), Connector: protocol.Connector{ConnectTimeout: c.ConnectTimeout, AllowRemoteDNS: c.AllowRemoteDNS}, targetSem: make(map[string]chan struct{}), resolved: make(map[string]*resolveEntry), baseline: baseline.Unmap(), targetRules: make(map[string]compiledResponseRules)}
 	for _, rule := range c.RequireText {
 		checker.requireText = append(checker.requireText, strings.ToLower(rule))
 	}
@@ -73,17 +89,94 @@ func NewChecker(c config.Config) *Checker {
 		path, expected, _ := strings.Cut(rule, "=")
 		checker.expectJSON = append(checker.expectJSON, jsonExpectation{path: strings.Split(path, "."), expected: expected})
 	}
+	for target, rules := range c.TargetRules {
+		checker.targetRules[target] = compileResponseRules(rules)
+	}
 	return checker
 }
 
+func compileResponseRules(rules config.ResponseRules) compiledResponseRules {
+	compiled := compiledResponseRules{
+		minHTTPStatus: rules.MinHTTPStatus, maxHTTPStatus: rules.MaxHTTPStatus,
+		minResponseBytes: rules.MinResponseBytes, minThroughputKBPS: rules.MinThroughputKBPS,
+		expectedBodySHA: strings.ToLower(rules.ExpectedBodySHA),
+	}
+	for _, rule := range rules.RequireText {
+		compiled.requireText = append(compiled.requireText, strings.ToLower(rule))
+	}
+	for _, rule := range rules.RejectText {
+		compiled.rejectText = append(compiled.rejectText, strings.ToLower(rule))
+	}
+	for _, rule := range rules.ExpectJSON {
+		path, expected, _ := strings.Cut(rule, "=")
+		compiled.expectJSON = append(compiled.expectJSON, jsonExpectation{path: strings.Split(path, "."), expected: expected})
+	}
+	return compiled
+}
+
+func (c *Checker) rulesFor(target string) compiledResponseRules {
+	rules := compiledResponseRules{
+		minHTTPStatus: 200, maxHTTPStatus: 399,
+		minResponseBytes: c.Config.MinResponseBytes, minThroughputKBPS: c.Config.MinThroughputKBPS,
+		requireText: c.requireText, rejectText: c.rejectText, expectJSON: c.expectJSON,
+		expectedBodySHA: strings.ToLower(c.Config.ExpectedBodySHA),
+	}
+	if targetRules, ok := c.targetRules[target]; ok {
+		if targetRules.minHTTPStatus > 0 {
+			rules.minHTTPStatus = targetRules.minHTTPStatus
+		}
+		if targetRules.maxHTTPStatus > 0 {
+			rules.maxHTTPStatus = targetRules.maxHTTPStatus
+		}
+		if targetRules.minResponseBytes > 0 {
+			rules.minResponseBytes = targetRules.minResponseBytes
+		}
+		if targetRules.minThroughputKBPS > 0 {
+			rules.minThroughputKBPS = targetRules.minThroughputKBPS
+		}
+		if targetRules.expectedBodySHA != "" {
+			rules.expectedBodySHA = targetRules.expectedBodySHA
+		}
+		rules.requireText = append(append([]string{}, rules.requireText...), targetRules.requireText...)
+		rules.rejectText = append(append([]string{}, rules.rejectText...), targetRules.rejectText...)
+		rules.expectJSON = append(append([]jsonExpectation{}, rules.expectJSON...), targetRules.expectJSON...)
+	}
+	return rules
+}
+
 func (c *Checker) Check(ctx context.Context, p model.Proxy) model.Result {
-	required := int(math.Ceil(float64(c.Config.Repeat) * c.Config.MinSuccessRate))
-	r := model.Result{SchemaVersion: model.SchemaVersion, ID: p.Key(), Proxy: p.SafeURI(), Endpoint: p.Address(), Protocol: p.Protocol, RequiredSuccesses: required, CheckedAt: time.Now().UTC(), InputProxy: p.FullURI()}
-	for i := 0; i < c.Config.Repeat; i++ {
+	repeats := c.Config.Repeat
+	if c.Config.RotationSamples > repeats {
+		repeats = c.Config.RotationSamples
+	}
+	targets := make([]string, 0, repeats*len(c.Config.Targets))
+	if c.Config.TargetMatrix {
+		for round := 0; round < repeats; round++ {
+			targets = append(targets, c.Config.Targets...)
+		}
+	} else {
+		for i := 0; i < repeats; i++ {
+			targets = append(targets, c.Config.Targets[i%len(c.Config.Targets)])
+		}
+	}
+	required := int(math.Ceil(float64(repeats) * c.Config.MinSuccessRate))
+	quorum := 0
+	if c.Config.TargetMatrix {
+		quorum = c.Config.TargetQuorum
+		if quorum == 0 {
+			quorum = len(c.Config.Targets)
+		}
+		required *= quorum
+	}
+	r := model.Result{SchemaVersion: model.SchemaVersion, ID: p.Key(), Proxy: p.SafeURI(), Endpoint: p.Address(), Protocol: p.Protocol, Label: c.Label, RequiredSuccesses: required, TargetQuorum: quorum, CheckedAt: time.Now().UTC(), InputProxy: p.FullURI()}
+	for i, target := range targets {
+		intervalDue := i > 0 && (!c.Config.TargetMatrix || i%len(c.Config.Targets) == 0)
+		if intervalDue && !c.waitInterval(ctx) {
+			break
+		}
 		if !c.waitRate(ctx) {
 			break
 		}
-		target := c.Config.Targets[i%len(c.Config.Targets)]
 		obs := c.attempt(ctx, p, target, i+1)
 		r.Observations = append(r.Observations, obs)
 		r.Attempts++
@@ -91,31 +184,60 @@ func (c *Checker) Check(ctx context.Context, p model.Proxy) model.Result {
 			r.Successes++
 			r.Protocol = obs.Protocol
 		}
-		if obs.Status == model.StatusOK && c.Config.StopOnSuccess && r.Successes >= required {
+		if !c.Config.TargetMatrix && obs.Status == model.StatusOK && c.Config.StopOnSuccess && r.Successes >= required {
 			break
 		}
-		if !c.Config.RetryPermanent && isPermanent(obs) {
+		globalPermanent := obs.Status == model.StatusAuthFailed || obs.Status == model.StatusInvalid || (!c.Config.TargetMatrix && obs.Status == model.StatusPolicyBlock)
+		if !c.Config.RetryPermanent && globalPermanent {
 			break
 		}
 		if ctx.Err() != nil {
 			break
 		}
-		remaining := c.Config.Repeat - (i + 1)
-		if r.Successes+remaining < required {
+		remaining := len(targets) - (i + 1)
+		if !c.Config.TargetMatrix && r.Successes+remaining < required {
 			break
 		}
-		if obs.Status != model.StatusOK && i+1 < c.Config.Repeat && !c.waitBackoff(ctx, p, i) {
+		if obs.Status != model.StatusOK && i+1 < len(targets) && !c.waitBackoff(ctx, p, i) {
 			break
 		}
 	}
-	if r.Successes >= required {
-		r.Status = model.StatusOK
-	} else if r.Successes > 0 {
-		r.Status = model.StatusUnreliable
-	} else if len(r.Observations) > 0 {
-		r.Status = r.Observations[len(r.Observations)-1].Status
+	expectedPerTarget := 0
+	if c.Config.TargetMatrix {
+		expectedPerTarget = repeats
+	}
+	expectedTargets := make([]string, 0, len(c.Config.Targets))
+	for _, target := range c.Config.Targets {
+		expectedTargets = append(expectedTargets, c.targetName(target))
+	}
+	r.TargetResults = intel.TargetResults(r.Observations, c.Config.MinSuccessRate, expectedPerTarget, expectedTargets...)
+	r.Rotation = intel.Rotation(r.Observations)
+	if c.Config.TargetMatrix {
+		qualified := 0
+		for _, targetResult := range r.TargetResults {
+			if targetResult.Qualified {
+				qualified++
+			}
+		}
+		if qualified >= quorum {
+			r.Status = model.StatusOK
+		} else if r.Successes > 0 {
+			r.Status = model.StatusUnreliable
+		} else if len(r.Observations) > 0 {
+			r.Status = r.Observations[len(r.Observations)-1].Status
+		} else {
+			r.Status = model.StatusInterrupted
+		}
 	} else {
-		r.Status = model.StatusInterrupted
+		if r.Successes >= required {
+			r.Status = model.StatusOK
+		} else if r.Successes > 0 {
+			r.Status = model.StatusUnreliable
+		} else if len(r.Observations) > 0 {
+			r.Status = r.Observations[len(r.Observations)-1].Status
+		} else {
+			r.Status = model.StatusInterrupted
+		}
 	}
 	if r.Status == model.StatusOK && p.Protocol == model.ProtocolAuto {
 		exportProxy := p
@@ -124,6 +246,20 @@ func (c *Checker) Check(ctx context.Context, p model.Proxy) model.Result {
 	}
 	r.Score = score.Calculate(r.Observations)
 	return r
+}
+
+func (c *Checker) waitInterval(ctx context.Context) bool {
+	if c.Config.RotationInterval <= 0 {
+		return true
+	}
+	timer := time.NewTimer(c.Config.RotationInterval)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func (c *Checker) waitBackoff(ctx context.Context, p model.Proxy, retry int) bool {
@@ -151,15 +287,11 @@ func (c *Checker) waitBackoff(ctx context.Context, p model.Proxy, retry int) boo
 	}
 }
 
-func isPermanent(obs model.Observation) bool {
-	return obs.Status == model.StatusAuthFailed || obs.Status == model.StatusPolicyBlock || obs.Status == model.StatusInvalid
-}
-
 func (c *Checker) attempt(parent context.Context, p model.Proxy, target string, n int) model.Observation {
 	ctx, cancel := context.WithTimeout(parent, c.Config.RequestTimeout)
 	defer cancel()
 	start := time.Now()
-	obs := model.Observation{Attempt: n, StartedAt: start.UTC(), Protocol: p.Protocol, Target: targetOrigin(target), Status: model.StatusFailed, Stage: model.StageResolve, Anonymity: "unavailable"}
+	obs := model.Observation{Attempt: n, StartedAt: start.UTC(), Protocol: p.Protocol, Target: c.targetName(target), Status: model.StatusFailed, Stage: model.StageResolve, Anonymity: "unavailable"}
 	dest, err := c.resolve(ctx, target)
 	obs.Timings.DNSMS = ms(dest.DNSDuration)
 	if err != nil {
@@ -184,11 +316,12 @@ func (c *Checker) attempt(parent context.Context, p model.Proxy, target string, 
 	var best error
 	bestProtocol := p.Protocol
 	bestObservation := obs
+	rules := c.rulesFor(target)
 	for _, protoName := range protos {
 		candidate := p
 		candidate.Protocol = protoName
 		obs.Protocol = protoName
-		got, e := c.request(ctx, candidate, destinationForProtocol(dest, protoName))
+		got, e := c.request(ctx, candidate, destinationForProtocol(dest, protoName), rules)
 		got.Attempt = n
 		got.StartedAt = obs.StartedAt
 		got.Target = obs.Target
@@ -220,6 +353,13 @@ func targetOrigin(raw string) string {
 	u.User = nil
 	u.Path, u.RawPath, u.RawQuery, u.Fragment = "/", "", "", ""
 	return u.String()
+}
+
+func (c *Checker) targetName(raw string) string {
+	if name := c.Config.TargetLabels[raw]; name != "" {
+		return name
+	}
+	return targetOrigin(raw)
 }
 
 func destinationForProtocol(dest policy.Destination, protoName model.Protocol) policy.Destination {
@@ -314,11 +454,11 @@ func (c *Checker) waitRate(ctx context.Context) bool {
 	return true
 }
 
-func (c *Checker) request(ctx context.Context, p model.Proxy, dest policy.Destination) (model.Observation, error) {
-	return c.requestWithRedirects(ctx, p, dest, c.Config.MaxRedirects)
+func (c *Checker) request(ctx context.Context, p model.Proxy, dest policy.Destination, rules compiledResponseRules) (model.Observation, error) {
+	return c.requestWithRedirects(ctx, p, dest, c.Config.MaxRedirects, rules)
 }
 
-func (c *Checker) requestWithRedirects(ctx context.Context, p model.Proxy, dest policy.Destination, redirectsLeft int) (model.Observation, error) {
+func (c *Checker) requestWithRedirects(ctx context.Context, p model.Proxy, dest policy.Destination, redirectsLeft int, rules compiledResponseRules) (model.Observation, error) {
 	obs := model.Observation{Protocol: p.Protocol, ResolvedIP: dest.IP.String(), Status: model.StatusFailed, Stage: model.StageConnect, Anonymity: "unavailable"}
 	timed, err := c.Connector.Open(ctx, p, dest)
 	if err != nil {
@@ -327,6 +467,8 @@ func (c *Checker) requestWithRedirects(ctx context.Context, p model.Proxy, dest 
 	defer timed.Conn.Close()
 	obs.Timings.ConnectMS = ms(timed.Connect)
 	obs.Timings.ProxyTLSMS = ms(timed.ProxyTLS)
+	obs.ProxyTLS = timed.ProxyTLSInfo
+	obs.ProxyAuthentication = timed.AuthMethod
 	obs.Timings.TunnelMS = ms(timed.Negotiate)
 	conn := timed.Conn
 	if dest.URL.Scheme == "https" {
@@ -348,6 +490,7 @@ func (c *Checker) requestWithRedirects(ctx context.Context, p model.Proxy, dest 
 			return obs, &protocol.Error{Stage: model.StageTLS, Status: status, Code: "tls_handshake", Detail: "TLS handshake or certificate validation failed", Err: err}
 		}
 		obs.Timings.TLSMS = ms(time.Since(tlsStart))
+		obs.DestinationTLS = model.TLSInfoFromState(tc.ConnectionState())
 		conn = tc
 	}
 	reqURL := *dest.URL
@@ -386,6 +529,8 @@ func (c *Checker) requestWithRedirects(ctx context.Context, p model.Proxy, dest 
 	bodyDuration := time.Since(bodyStart)
 	obs.Timings.BodyMS = ms(bodyDuration)
 	obs.BodyBytes = int64(len(body))
+	bodyDigest := sha256.Sum256(body)
+	obs.BodySHA256 = hex.EncodeToString(bodyDigest[:])
 	if obs.BodyBytes > 0 && bodyDuration > 0 {
 		obs.ThroughputKBPS = float64(obs.BodyBytes) / 1000 / bodyDuration.Seconds()
 	}
@@ -406,12 +551,12 @@ func (c *Checker) requestWithRedirects(ctx context.Context, p model.Proxy, dest 
 		if locErr != nil {
 			return obs, &protocol.Error{Stage: model.StageResponse, Status: model.StatusFailed, Code: "invalid_redirect", Detail: "destination returned an invalid redirect"}
 		}
-		return c.followRedirect(ctx, p, loc, redirectsLeft-1, obs)
+		return c.followRedirect(ctx, p, loc, redirectsLeft-1, obs, rules)
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+	if resp.StatusCode < rules.minHTTPStatus || resp.StatusCode > rules.maxHTTPStatus {
 		return obs, &protocol.Error{Stage: model.StageResponse, Status: model.StatusInconclusive, Code: "http_status", Detail: fmt.Sprintf("destination returned HTTP status %d", resp.StatusCode)}
 	}
-	if len(c.requireText) > 0 || len(c.rejectText) > 0 {
+	if len(rules.requireText) > 0 || len(rules.rejectText) > 0 {
 		bodyLower := bytes.ToLower(body)
 		var headerText strings.Builder
 		headerText.Grow(1024)
@@ -422,18 +567,18 @@ func (c *Checker) requestWithRedirects(ctx context.Context, p model.Proxy, dest 
 			headerText.WriteString(strings.ToLower(strings.Join(values, ",")))
 		}
 		headersLower := headerText.String()
-		for i, required := range c.requireText {
+		for i, required := range rules.requireText {
 			if !bytes.Contains(bodyLower, []byte(required)) && !strings.Contains(headersLower, required) {
 				return obs, &protocol.Error{Stage: model.StageResponse, Status: model.StatusFailed, Code: "required_content_missing", Detail: fmt.Sprintf("response did not satisfy required content rule %d", i+1)}
 			}
 		}
-		for i, rejected := range c.rejectText {
+		for i, rejected := range rules.rejectText {
 			if bytes.Contains(bodyLower, []byte(rejected)) || strings.Contains(headersLower, rejected) {
 				return obs, &protocol.Error{Stage: model.StageResponse, Status: model.StatusFailed, Code: "rejected_content_present", Detail: fmt.Sprintf("response matched rejected content rule %d", i+1)}
 			}
 		}
 	}
-	if len(c.expectJSON) > 0 {
+	if len(rules.expectJSON) > 0 {
 		var document any
 		decoder := json.NewDecoder(bytes.NewReader(body))
 		decoder.UseNumber()
@@ -442,17 +587,20 @@ func (c *Checker) requestWithRedirects(ctx context.Context, p model.Proxy, dest 
 		if decodeErr != nil || decoder.Decode(&trailing) != io.EOF {
 			return obs, &protocol.Error{Stage: model.StageResponse, Status: model.StatusFailed, Code: "expected_json_invalid", Detail: "response is not valid JSON required by configured assertions"}
 		}
-		for i, expectation := range c.expectJSON {
+		for i, expectation := range rules.expectJSON {
 			value, found := jsonPath(document, expectation.path)
 			if !found || fmt.Sprint(value) != expectation.expected {
 				return obs, &protocol.Error{Stage: model.StageResponse, Status: model.StatusFailed, Code: "json_assertion_failed", Detail: fmt.Sprintf("response did not satisfy JSON assertion %d", i+1)}
 			}
 		}
 	}
-	if obs.BodyBytes < c.Config.MinResponseBytes {
+	if rules.expectedBodySHA != "" && obs.BodySHA256 != rules.expectedBodySHA {
+		return obs, &protocol.Error{Stage: model.StageResponse, Status: model.StatusFailed, Code: "body_integrity_mismatch", Detail: "response body SHA-256 did not match the configured value"}
+	}
+	if obs.BodyBytes < rules.minResponseBytes {
 		return obs, &protocol.Error{Stage: model.StageResponse, Status: model.StatusFailed, Code: "response_too_small", Detail: "response body is smaller than the configured measurement size"}
 	}
-	if c.Config.MinThroughputKBPS > 0 && obs.ThroughputKBPS < c.Config.MinThroughputKBPS {
+	if rules.minThroughputKBPS > 0 && obs.ThroughputKBPS < rules.minThroughputKBPS {
 		return obs, &protocol.Error{Stage: model.StageResponse, Status: model.StatusFailed, Code: "throughput_below_minimum", Detail: "response throughput is below the configured minimum"}
 	}
 	obs.Status = model.StatusOK
@@ -466,7 +614,7 @@ func (c *Checker) requestWithRedirects(ctx context.Context, p model.Proxy, dest 
 	return obs, nil
 }
 
-func (c *Checker) followRedirect(ctx context.Context, p model.Proxy, u *url.URL, left int, prior model.Observation) (model.Observation, error) {
+func (c *Checker) followRedirect(ctx context.Context, p model.Proxy, u *url.URL, left int, prior model.Observation, rules compiledResponseRules) (model.Observation, error) {
 	dest, err := c.Policy.Resolve(ctx, u.String())
 	if err != nil {
 		if errors.Is(err, policy.ErrBlocked) {
@@ -474,7 +622,7 @@ func (c *Checker) followRedirect(ctx context.Context, p model.Proxy, u *url.URL,
 		}
 		return prior, &protocol.Error{Stage: model.StageResolve, Status: model.StatusInconclusive, Code: "redirect_dns", Detail: "redirect destination DNS resolution failed", Err: err}
 	}
-	next, err := c.requestWithRedirects(ctx, p, dest, left)
+	next, err := c.requestWithRedirects(ctx, p, dest, left, rules)
 	if err == nil {
 		next.Timings.ConnectMS += prior.Timings.ConnectMS
 		next.Timings.ProxyTLSMS += prior.Timings.ProxyTLSMS

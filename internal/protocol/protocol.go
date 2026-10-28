@@ -44,10 +44,12 @@ func (e *Error) Error() string {
 func (e *Error) Unwrap() error { return e.Err }
 
 type TimedConn struct {
-	Conn      net.Conn
-	Connect   time.Duration
-	ProxyTLS  time.Duration
-	Negotiate time.Duration
+	Conn         net.Conn
+	Connect      time.Duration
+	ProxyTLS     time.Duration
+	Negotiate    time.Duration
+	ProxyTLSInfo *model.TLSInfo
+	AuthMethod   string
 }
 
 type Connector struct {
@@ -80,6 +82,8 @@ func (c Connector) Open(ctx context.Context, proxy model.Proxy, dest policy.Dest
 		_ = conn.SetDeadline(deadline)
 	}
 	var proxyTLSTime time.Duration
+	var proxyTLSInfo *model.TLSInfo
+	authMethod := "none"
 	if proxy.Protocol == model.ProtocolHTTPS {
 		proxyTLSStart := time.Now()
 		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: proxy.Host}
@@ -95,11 +99,15 @@ func (c Connector) Open(ctx context.Context, proxy model.Proxy, dest policy.Dest
 			return TimedConn{}, &Error{Stage: model.StageProxyTLS, Status: statusFromNet(err), Code: "proxy_tls_handshake", Detail: "TLS handshake or certificate validation with proxy failed", Err: err}
 		}
 		proxyTLSTime = time.Since(proxyTLSStart)
+		proxyTLSInfo = model.TLSInfoFromState(secure.ConnectionState())
 		conn = secure
 	}
 	negStart := time.Now()
 	switch proxy.Protocol {
 	case model.ProtocolHTTP, model.ProtocolHTTPS:
+		if proxy.Credentials != nil {
+			authMethod = "basic"
+		}
 		if dest.URL.Scheme == "https" || !c.AllowRemoteDNS {
 			tunnel, tunnelErr := httpConnect(conn, proxy, dest, c.AllowRemoteDNS)
 			if tunnelErr != nil {
@@ -108,10 +116,16 @@ func (c Connector) Open(ctx context.Context, proxy model.Proxy, dest policy.Dest
 			conn = tunnel
 		}
 	case model.ProtocolSOCKS4:
+		if proxy.Credentials != nil {
+			authMethod = "userid"
+		}
 		if err := socks4Connect(conn, proxy, dest, false); err != nil {
 			return TimedConn{}, err
 		}
 	case model.ProtocolSOCKS4A:
+		if proxy.Credentials != nil {
+			authMethod = "userid"
+		}
 		if !c.AllowRemoteDNS {
 			return TimedConn{}, &Error{Stage: model.StagePolicy, Status: model.StatusPolicyBlock, Code: "remote_dns_disabled", Detail: "SOCKS4a remote DNS is disabled by destination policy"}
 		}
@@ -119,14 +133,16 @@ func (c Connector) Open(ctx context.Context, proxy model.Proxy, dest policy.Dest
 			return TimedConn{}, err
 		}
 	case model.ProtocolSOCKS5:
-		if err := socks5Connect(conn, proxy, dest, c.AllowRemoteDNS); err != nil {
-			return TimedConn{}, err
+		var authErr error
+		authMethod, authErr = socks5Connect(conn, proxy, dest, c.AllowRemoteDNS)
+		if authErr != nil {
+			return TimedConn{}, authErr
 		}
 	default:
 		return TimedConn{}, &Error{Stage: model.StageNegotiate, Status: model.StatusInvalid, Code: "unsupported_protocol", Detail: "unsupported proxy protocol"}
 	}
 	ok = true
-	return TimedConn{Conn: conn, Connect: connectTime, ProxyTLS: proxyTLSTime, Negotiate: time.Since(negStart)}, nil
+	return TimedConn{Conn: conn, Connect: connectTime, ProxyTLS: proxyTLSTime, Negotiate: time.Since(negStart), ProxyTLSInfo: proxyTLSInfo, AuthMethod: authMethod}, nil
 }
 
 func statusFromNet(err error) model.Status {
@@ -276,51 +292,53 @@ func socks4Connect(conn net.Conn, proxy model.Proxy, dest policy.Destination, re
 	return nil
 }
 
-func socks5Connect(conn net.Conn, proxy model.Proxy, dest policy.Destination, remoteDNS bool) error {
+func socks5Connect(conn net.Conn, proxy model.Proxy, dest policy.Destination, remoteDNS bool) (string, error) {
 	methods := []byte{0}
 	if proxy.Credentials != nil {
 		methods = append(methods, 2)
 	}
 	if _, err := conn.Write(append([]byte{5, byte(len(methods))}, methods...)); err != nil {
-		return classifyNet(model.StageNegotiate, "socks5_greeting_write", err)
+		return "", classifyNet(model.StageNegotiate, "socks5_greeting_write", err)
 	}
 	resp := make([]byte, 2)
 	if _, err := io.ReadFull(conn, resp); err != nil {
-		return classifyNet(model.StageNegotiate, "socks5_greeting_read", err)
+		return "", classifyNet(model.StageNegotiate, "socks5_greeting_read", err)
 	}
 	if resp[0] != 5 {
-		return &Error{Stage: model.StageNegotiate, Status: model.StatusFailed, Code: "socks5_bad_version", Detail: "invalid SOCKS5 response version"}
+		return "", &Error{Stage: model.StageNegotiate, Status: model.StatusFailed, Code: "socks5_bad_version", Detail: "invalid SOCKS5 response version"}
 	}
+	authMethod := "none"
 	switch resp[1] {
 	case 0:
 	case 2:
+		authMethod = "username_password"
 		if proxy.Credentials == nil {
-			return &Error{Stage: model.StageNegotiate, Status: model.StatusAuthFailed, Code: "socks5_auth_required", Detail: "SOCKS5 proxy requires username/password"}
+			return "", &Error{Stage: model.StageNegotiate, Status: model.StatusAuthFailed, Code: "socks5_auth_required", Detail: "SOCKS5 proxy requires username/password"}
 		}
 		user, pass := []byte(proxy.Credentials.Username), []byte(proxy.Credentials.Password)
 		auth := append([]byte{1, byte(len(user))}, user...)
 		auth = append(auth, byte(len(pass)))
 		auth = append(auth, pass...)
 		if _, err := conn.Write(auth); err != nil {
-			return classifyNet(model.StageNegotiate, "socks5_auth_write", err)
+			return "", classifyNet(model.StageNegotiate, "socks5_auth_write", err)
 		}
 		ar := make([]byte, 2)
 		if _, err := io.ReadFull(conn, ar); err != nil {
-			return classifyNet(model.StageNegotiate, "socks5_auth_read", err)
+			return "", classifyNet(model.StageNegotiate, "socks5_auth_read", err)
 		}
 		if ar[0] != 1 || ar[1] != 0 {
-			return &Error{Stage: model.StageNegotiate, Status: model.StatusAuthFailed, Code: "socks5_auth_failed", Detail: "SOCKS5 username/password authentication failed"}
+			return "", &Error{Stage: model.StageNegotiate, Status: model.StatusAuthFailed, Code: "socks5_auth_failed", Detail: "SOCKS5 username/password authentication failed"}
 		}
 	case 0xff:
-		return &Error{Stage: model.StageNegotiate, Status: model.StatusAuthFailed, Code: "socks5_no_acceptable_auth", Detail: "SOCKS5 proxy accepts none of the offered authentication methods"}
+		return "", &Error{Stage: model.StageNegotiate, Status: model.StatusAuthFailed, Code: "socks5_no_acceptable_auth", Detail: "SOCKS5 proxy accepts none of the offered authentication methods"}
 	default:
-		return &Error{Stage: model.StageNegotiate, Status: model.StatusFailed, Code: "socks5_unsupported_auth", Detail: fmt.Sprintf("SOCKS5 proxy selected unsupported authentication method 0x%02x", resp[1])}
+		return "", &Error{Stage: model.StageNegotiate, Status: model.StatusFailed, Code: "socks5_unsupported_auth", Detail: fmt.Sprintf("SOCKS5 proxy selected unsupported authentication method 0x%02x", resp[1])}
 	}
 	port, _ := strconv.ParseUint(dest.Port, 10, 16)
 	req := []byte{5, 1, 0}
 	if remoteDNS {
 		if len(dest.Host) == 0 || len(dest.Host) > 255 {
-			return &Error{Stage: model.StageNegotiate, Status: model.StatusInvalid, Code: "socks5_domain_length", Detail: "SOCKS5 destination hostname is outside protocol limits"}
+			return "", &Error{Stage: model.StageNegotiate, Status: model.StatusInvalid, Code: "socks5_domain_length", Detail: "SOCKS5 destination hostname is outside protocol limits"}
 		}
 		req = append(req, 3, byte(len(dest.Host)))
 		req = append(req, dest.Host...)
@@ -335,18 +353,18 @@ func socks5Connect(conn net.Conn, proxy model.Proxy, dest policy.Destination, re
 	}
 	req = append(req, byte(port>>8), byte(port))
 	if _, err := conn.Write(req); err != nil {
-		return classifyNet(model.StageTunnel, "socks5_connect_write", err)
+		return "", classifyNet(model.StageTunnel, "socks5_connect_write", err)
 	}
 	head := make([]byte, 4)
 	if _, err := io.ReadFull(conn, head); err != nil {
-		return classifyNet(model.StageTunnel, "socks5_connect_read", err)
+		return "", classifyNet(model.StageTunnel, "socks5_connect_read", err)
 	}
 	if head[0] != 5 {
-		return &Error{Stage: model.StageTunnel, Status: model.StatusFailed, Code: "socks5_bad_reply", Detail: "invalid SOCKS5 CONNECT response"}
+		return "", &Error{Stage: model.StageTunnel, Status: model.StatusFailed, Code: "socks5_bad_reply", Detail: "invalid SOCKS5 CONNECT response"}
 	}
 	if head[1] != 0 {
 		code := socks5Reply(head[1])
-		return &Error{Stage: model.StageTunnel, Status: model.StatusInconclusive, Code: "socks5_" + code, Detail: "SOCKS5 destination connection failed: " + code}
+		return "", &Error{Stage: model.StageTunnel, Status: model.StatusInconclusive, Code: "socks5_" + code, Detail: "SOCKS5 destination connection failed: " + code}
 	}
 	var n int
 	switch head[3] {
@@ -357,17 +375,17 @@ func socks5Connect(conn net.Conn, proxy model.Proxy, dest policy.Destination, re
 	case 3:
 		l := make([]byte, 1)
 		if _, err := io.ReadFull(conn, l); err != nil {
-			return classifyNet(model.StageTunnel, "socks5_bound_read", err)
+			return "", classifyNet(model.StageTunnel, "socks5_bound_read", err)
 		}
 		n = int(l[0])
 	default:
-		return &Error{Stage: model.StageTunnel, Status: model.StatusFailed, Code: "socks5_bad_address", Detail: "invalid SOCKS5 bound address type"}
+		return "", &Error{Stage: model.StageTunnel, Status: model.StatusFailed, Code: "socks5_bad_address", Detail: "invalid SOCKS5 bound address type"}
 	}
 	tail := make([]byte, n+2)
 	if _, err := io.ReadFull(conn, tail); err != nil {
-		return classifyNet(model.StageTunnel, "socks5_bound_read", err)
+		return "", classifyNet(model.StageTunnel, "socks5_bound_read", err)
 	}
-	return nil
+	return authMethod, nil
 }
 
 func socks5Reply(b byte) string {

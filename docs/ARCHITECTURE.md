@@ -6,7 +6,7 @@ HTTP service, plugin execution, or downloaded code path.
 Data flow:
 
 ```text
-text / CSV / JSON / gzip
+text / CSV / JSON / gzip / scenario
         |
  streaming parser + hash deduplication
         |
@@ -14,15 +14,16 @@ text / CSV / JSON / gzip
         |
  fixed worker pool -- per-target semaphore
         |
- cached destination policy -> protocol adapter -> TLS/HTTP validation
+ preflight + cached destination policy -> protocol adapter -> TLS/HTTP validation
         |
- raw observations -> derived score + bounded histogram
+ raw observations -> target quorum + rotation + score + bounded histogram
         |
- stdout formatter / atomic optional JSONL history
+ stdout / checkpoint / quality gate / atomic optional JSONL history
 ```
 
-Packages are divided by responsibility: `input`, `config`, `policy`,
-`protocol`, `engine`, `metadata`, `score`, `metrics`, `output`, `store`, and `cli`.
+Packages are divided by responsibility: `input`, `config`, `scenario`, `policy`,
+`protocol`, `engine`, `intel`, `metadata`, `score`, `metrics`, `history`,
+`quality`, `output`, `store`, and `cli`.
 Interactive and non-interactive commands use the same engine and models.
 
 The global worker count, configurable job/result queues, and per-target semaphores are all
@@ -40,16 +41,18 @@ operator explicitly requests them; successful runs can also stop at the first
 success. This avoids predictable connection multiplication while preserving an
 exhaustive mode.
 
-Deduplication retains compact 96-bit binary identities instead of hexadecimal
-strings. JSONL output writes directly through a streaming encoder. These keep
+Deduplication retains keyed 128-bit in-process identities so credential variants
+remain distinct without exposing a credential-derived public ID. Persisted IDs
+are 96-bit endpoint hashes over protocol, host, and port. JSONL output writes
+directly through a streaming encoder. These keep
 allocation and resident-memory growth low on large datasets; exact
 deduplication can be disabled for constant parser state.
 
 Gzip is detected from stream magic bytes rather than trusted file extensions.
-The byte budget is shared across every input source and enforced on the
-decompressed stream, so additional files and compression cannot multiply the
-configured parser limit. Filename suffixes are used only to select the nested
-data format.
+The byte and record-count budgets are shared across every input source and
+enforced on the decompressed stream, so additional files, tiny records, and
+compression cannot multiply the configured parser limits. Filename suffixes
+are used only to select the nested data format.
 
 Destination hostnames are exact-allowlisted, every returned address is checked,
 and the selected safe address is placed in CONNECT/SOCKS requests. HTTPS keeps
@@ -76,6 +79,13 @@ same-directory temporary-file, flush, synchronization, and atomic-commit path.
 Canonical path comparison resolves symbolic-link aliases before an output can
 replace an input.
 
+Checkpoints append redacted results, periodically flush and synchronize, repair
+an incomplete final line on resume, and bound the number of restored IDs.
+Dataset sharding is streaming and deterministic by endpoint hash; merging is
+bounded by an explicit record limit. Multi-file shard publication prepares all
+temporary files first, although the final set cannot be transactionally renamed
+as one filesystem operation.
+
 Optional metadata is loaded before workers start into IPv4 and IPv6 prefix maps.
 Lookup checks at most 33 IPv4 or 129 IPv6 prefix lengths and never performs a
 network request. Content qualification operates only on the already bounded
@@ -87,3 +97,13 @@ the required success count before starting, stops when that count is reached in
 first-success mode, and also stops when it becomes impossible to reach. Partial
 success below the requirement is retained as `unreliable` evidence rather than
 being promoted to a working proxy.
+
+Matrix scenarios repeat each named target and qualify target-local reliability
+before applying a quorum. Rotation intervals apply between rounds, not between
+destinations in one round. Direct preflight is independently bounded to four
+concurrent destinations and never inherits environment proxy settings.
+
+The local JSONL history remains optional. Cross-run analysis streams bounded
+records into endpoint trends; pool analysis deliberately loads only up to its
+operator-selected limit to calculate exit/subnet/ASN diversity. No background
+service or network metadata lookup is introduced.

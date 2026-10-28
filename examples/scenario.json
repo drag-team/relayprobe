@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "name": "production-egress",
+  "repeat": 3,
+  "min_success_rate": 0.67,
+  "target_matrix": true,
+  "target_quorum": 2,
+  "rotation_samples": 3,
+  "targets": [
+    {
+      "name": "connectivity",
+      "url": "https://example.com/",
+      "min_http_status": 200,
+      "max_http_status": 299,
+      "require_text": ["Example Domain"]
+    },
+    {
+      "name": "controlled-api",
+      "url": "https://validation.example.net/status",
+      "min_http_status": 200,
+      "max_http_status": 299,
+      "expect_json": ["status=ok"]
+    }
+  ]
+}

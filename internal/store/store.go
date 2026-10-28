@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/drag-team/relayprobe/internal/model"
 )
@@ -26,6 +27,8 @@ type RunWriter struct {
 	w      *bufio.Writer
 	closed bool
 }
+
+const MaxResultBytes = 16 << 20
 
 func NewRunWriter(dataDir string) (*RunWriter, error) {
 	dir := filepath.Join(dataDir, "runs")
@@ -52,9 +55,15 @@ func (r *RunWriter) Write(result model.Result) error {
 	if r.closed {
 		return errors.New("run writer is closed")
 	}
+	if err := validateResult(result); err != nil {
+		return err
+	}
 	b, err := json.Marshal(result)
 	if err != nil {
 		return err
+	}
+	if len(b) > MaxResultBytes {
+		return fmt.Errorf("serialized result exceeds %d bytes", MaxResultBytes)
 	}
 	if _, err = r.w.Write(b); err != nil {
 		return err
@@ -67,6 +76,24 @@ func (r *RunWriter) Commit(summary model.RunSummary) error {
 		return errors.New("run writer is closed")
 	}
 	r.closed = true
+	metaPart := filepath.Join(r.dir, r.ID+".summary.json.part")
+	metaFinal := filepath.Join(r.dir, r.ID+".summary.json")
+	committed := false
+	resultPublished := false
+	metaPublished := false
+	defer func() {
+		if !committed {
+			_ = r.f.Close()
+			_ = os.Remove(r.part)
+			_ = os.Remove(metaPart)
+			if resultPublished {
+				_ = os.Remove(r.final)
+			}
+			if metaPublished {
+				_ = os.Remove(metaFinal)
+			}
+		}
+	}()
 	if err := r.w.Flush(); err != nil {
 		_ = r.f.Close()
 		return err
@@ -78,27 +105,51 @@ func (r *RunWriter) Commit(summary model.RunSummary) error {
 	if err := r.f.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(r.part, r.final); err != nil {
-		return fmt.Errorf("commit run: %w", err)
-	}
 	b, err := json.MarshalIndent(summary, "", "  ")
 	if err != nil {
 		return err
 	}
-	metaPart := filepath.Join(r.dir, r.ID+".summary.json.part")
-	metaFinal := filepath.Join(r.dir, r.ID+".summary.json")
-	if err := os.WriteFile(metaPart, append(b, '\n'), 0600); err != nil {
+	metaFile, err := os.OpenFile(metaPart, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
 		return err
 	}
+	if _, err := metaFile.Write(append(b, '\n')); err != nil {
+		_ = metaFile.Close()
+		_ = os.Remove(metaPart)
+		return err
+	}
+	if err := metaFile.Sync(); err != nil {
+		_ = metaFile.Close()
+		_ = os.Remove(metaPart)
+		return err
+	}
+	if err := metaFile.Close(); err != nil {
+		_ = os.Remove(metaPart)
+		return err
+	}
+	if err := os.Rename(r.part, r.final); err != nil {
+		_ = os.Remove(metaPart)
+		return fmt.Errorf("commit run: %w", err)
+	}
+	resultPublished = true
 	if err := os.Rename(metaPart, metaFinal); err != nil {
+		_ = os.Remove(r.final)
 		return err
 	}
+	metaPublished = true
 	d, err := os.Open(r.dir)
 	if err != nil {
 		return err
 	}
-	defer d.Close()
-	return d.Sync()
+	if err := d.Sync(); err != nil {
+		_ = d.Close()
+		return err
+	}
+	if err := d.Close(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 func (r *RunWriter) Abort() {
@@ -149,13 +200,16 @@ func ReadResults(path string, emit func(model.Result) error) error {
 	}
 	defer f.Close()
 	s := bufio.NewScanner(f)
-	s.Buffer(make([]byte, 64<<10), 4<<20)
+	s.Buffer(make([]byte, 64<<10), MaxResultBytes)
 	line := 0
 	for s.Scan() {
 		line++
 		var r model.Result
 		if err := json.Unmarshal(s.Bytes(), &r); err != nil {
 			return fmt.Errorf("decode run line %d: %w", line, err)
+		}
+		if err := validateResult(r); err != nil {
+			return fmt.Errorf("validate run line %d: %w", line, err)
 		}
 		if err := emit(r); err != nil {
 			return err
@@ -167,6 +221,26 @@ func ReadResults(path string, emit func(model.Result) error) error {
 	return nil
 }
 
+func validateResult(result model.Result) error {
+	if len(result.ID) < 1 || len(result.ID) > 128 || strings.IndexFunc(result.ID, unicode.IsControl) >= 0 {
+		return errors.New("result ID is invalid")
+	}
+	if len(result.Endpoint) > 512 || len(result.Proxy) > 1024 || len(result.Label) > 64 || hasControl(result.Endpoint) || hasControl(result.Proxy) || hasControl(result.Label) {
+		return errors.New("result identity fields are invalid")
+	}
+	if len(result.Observations) > 2048 || len(result.TargetResults) > 64 {
+		return errors.New("result contains too many observations or target summaries")
+	}
+	for _, observation := range result.Observations {
+		if len(observation.Target) > 512 || len(observation.Code) > 128 || len(observation.Message) > 2048 || len(observation.ResponseHeaders) > 32 {
+			return errors.New("result observation exceeds structural limits")
+		}
+	}
+	return nil
+}
+
+func hasControl(value string) bool { return strings.IndexFunc(value, unicode.IsControl) >= 0 }
+
 func ReadSummary(path string) (model.RunSummary, error) {
 	var s model.RunSummary
 	f, err := os.Open(strings.TrimSuffix(path, ".jsonl") + ".summary.json")
@@ -174,9 +248,17 @@ func ReadSummary(path string) (model.RunSummary, error) {
 		return s, err
 	}
 	defer f.Close()
-	dec := json.NewDecoder(io.LimitReader(f, 1<<20))
+	limited := &io.LimitedReader{R: f, N: (1 << 20) + 1}
+	dec := json.NewDecoder(limited)
 	if err := dec.Decode(&s); err != nil {
 		return s, err
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		return s, errors.New("summary contains trailing JSON data")
+	}
+	if limited.N <= 0 {
+		return s, errors.New("summary exceeds 1 MiB")
 	}
 	return s, nil
 }

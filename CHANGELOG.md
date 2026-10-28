@@ -8,6 +8,19 @@ All notable changes to RelayProbe are documented in this file. The project uses
 
 ### Added
 
+- Strict declarative scenarios with named targets, per-target rules, matrix execution, and quorum qualification.
+- Direct target preflight with report and strict modes.
+- Exit-IP rotation/sticky classification, cross-run stability history, and pool diversity analysis.
+- Destination and proxy TLS version, cipher, ALPN, certificate fingerprint, and expiry evidence.
+- Custom destination and proxy CA bundles that extend the system trust store.
+- Response-body SHA-256 assertions and stored integrity evidence.
+- Automatic bounded concurrency recommendations based on CPU and file-descriptor limits.
+- Resumable synchronized JSONL checkpoints with incomplete-tail recovery.
+- Deterministic credential-preserving dataset sharding and bounded result-run merging.
+- Strict JSON quality gates and atomic JUnit XML reports for CI.
+- Interactive saved-result exploration with a non-interactive `results` fallback.
+- Label, rotation class, and unique-exit filtering and sorting.
+- Negotiated proxy authentication-method evidence.
 - Public contribution, security, governance, CI, and release documentation.
 - Transparent gzip input for files and standard input, including nested format detection.
 - Atomic `--summary-output` JSON for CI and non-persistent automation.
@@ -28,6 +41,15 @@ All notable changes to RelayProbe are documented in this file. The project uses
 
 ### Changed
 
+- Result schema advanced to version 5.
+- Development version advanced to 0.7.0.
+- Persisted IDs now identify only protocol/host/port; credential-sensitive deduplication uses an ephemeral keyed HMAC.
+- Ordinary output and saved history now redact proxy usernames as well as passwords.
+- Saved results are capped at 16 MiB per record and history commits synchronize metadata before publication.
+- Configuration, scenarios, quality policies, CA bundles, checkpoints, and history reads have explicit size or record limits.
+- Input cardinality is bounded independently of byte size, with a one-million-record default.
+- Target matrices are rejected when they exceed 1,000 planned attempts per proxy.
+- JSON proxy objects now preserve explicitly supplied username/password fields.
 - Input byte limits are aggregate across sources and apply after decompression.
 - Output/input collision checks resolve symbolic-link aliases.
 - Explicit false CLI booleans now override profiles, environment, and files.
@@ -35,11 +57,15 @@ All notable changes to RelayProbe are documented in this file. The project uses
 - CSV exports include exit, anonymity, transfer, and metadata fields.
 - Failed response assertions retain protocol timing and body evidence.
 - File exports now use synchronized atomic replacement.
-- Result schema advanced to version 4.
-- Development version advanced to 0.6.0.
 
 ### Security
 
+- Target names and pool labels reject terminal control characters.
+- Scenario target names distinguish same-origin paths without persisting sensitive URL paths or queries.
+- Checkpoint, working, summary, JUnit, and input collision checks use canonical paths.
+- Existing checkpoints must be owner-only regular files; symbolic links are rejected before any repair or truncation.
+- Checkpoints use an exclusive non-blocking file lock to prevent concurrent writers from interleaving results.
+- Doctor output sanitizes target paths and queries and validates configured CA and metadata files.
 - Compressed inputs cannot bypass the configured decompressed-byte budget.
 - Incomplete runs preserve existing summary files rather than replacing them.
 - Forwarding evidence no longer persists header values that may contain a local IP.

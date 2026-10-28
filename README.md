@@ -21,7 +21,11 @@ daemon, telemetry, or root requirement.
 - Bounded workers, queues, target concurrency, request rate, response size, and retries.
 - Streaming TXT, CSV, JSON, JSONL, NDJSON, and gzip input with exact optional deduplication.
 - Repeat measurements, reliability thresholds, latency distributions, and explainable scores.
+- Multi-target scenarios with per-target assertions, quorum qualification, and direct preflight.
+- Exit-IP rotation, sticky-session, pool-diversity, and cross-run stability analysis.
 - Response assertions, body throughput measurement, and evidence-based anonymity levels.
+- Resumable checkpoints, deterministic dataset sharding, and result-run merging.
+- JSON quality gates and JUnit XML reports for CI policy enforcement.
 - Optional offline country, city, ASN, organization, and network-type metadata.
 - JSONL, CSV, TXT, and human-readable output with clean stdout/stderr separation.
 - Atomic credential-bearing working lists and optional local run history.
@@ -76,6 +80,9 @@ Common workflows:
 ```sh
 relayprobe check proxies.txt
 relayprobe check --format jsonl --concurrency 128 proxies.txt > results.jsonl
+relayprobe check --concurrency auto --preflight report --checkpoint run.jsonl proxies.txt
+relayprobe check --resume run.jsonl proxies.txt
+relayprobe check --scenario examples/scenario.json --policy examples/quality-policy.json --junit-output relayprobe.xml proxies.txt
 relayprobe check --format txt --output-status ok proxies.txt > working-redacted.txt
 relayprobe check --quiet --summary-output summary.json --require-count 10 proxies.txt
 relayprobe check --reject-text "access denied" --reject-text "cf-turnstile" proxies.txt
@@ -88,6 +95,11 @@ relayprobe check --input-format json --repeat 5 --save proxies.json
 relayprobe results --run latest --status ok --sort score --descending
 relayprobe export --run latest --status ok --format csv --output working.csv
 relayprobe stats --run latest --json
+relayprobe history --runs 20
+relayprobe pool --run latest
+relayprobe explore --run latest
+relayprobe shard --shards 4 --output-dir shards proxies.txt
+relayprobe merge --strategy best --output combined.jsonl run-a.jsonl run-b.jsonl
 relayprobe runs --limit 20
 relayprobe runs prune --keep 50
 relayprobe runs prune --keep 50 --execute
@@ -129,7 +141,7 @@ without a useful filename. With no input paths RelayProbe reads standard input;
 
 URI credentials must be percent-encoded where necessary. Supply credentials in
 a mode-0600 file or protected standard input instead of shell arguments. Normal
-output and saved history redact passwords. A redacted `***` password cannot be
+output and saved history redact usernames and passwords. A redacted `***` password cannot be
 re-imported as a credential.
 
 The commercial `host:port:username:password` form is accepted for IPv4 and
@@ -137,7 +149,7 @@ hostnames when the second field is a valid port. Colons inside credentials are
 not representable in that form; use an authenticated URI with percent-encoding
 instead. Bracketed IPv6 must use URI or `host:port` syntax.
 
-Input is capped at 256 MiB by default across the complete invocation and
+Input is capped at 256 MiB and 1,000,000 records by default across the complete invocation and
 individual text records at 1 MiB. For gzip sources, the aggregate cap applies to
 decompressed bytes. Parsing, validation, persistence, and ordinary output are streamed.
 `--no-deduplicate` avoids retaining endpoint hashes when constant parser memory
@@ -184,6 +196,11 @@ rate. Defaults are conservative for an ordinary VPS; increasing concurrency
 does not necessarily improve throughput. `--connect-timeout`,
 `--request-timeout`, `--repeat`, `--retry-backoff`, and `--dns-cache-ttl`
 control failure cost and repeat behavior.
+
+`--concurrency auto` derives a bounded recommendation from CPU count and the
+current file-descriptor limit, capped at 1024. `relayprobe doctor` reports that
+recommendation. It is a safe starting point, not an adaptive claim that more
+workers will improve a particular network.
 
 `--verbose` prints periodic, real execution counters to stderr. Redirected and
 machine-readable stdout never receives ANSI sequences or progress messages.
@@ -234,6 +251,29 @@ country, city, ASN, organization, and an operator-supplied network type such as
 `residential`, `datacenter`, `mobile`, or `isp`. RelayProbe does not infer network
 type from organization names. See [metadata](docs/METADATA.md).
 
+`--rotation-samples N` takes enough successful observations to distinguish a
+stable exit from rotating, sticky, or mixed behavior. `history` aggregates
+availability and status changes across saved runs; `pool` measures unique exits,
+IPv4 /24 or IPv6 /48 subnets, ASNs, countries, and ASN concentration. These are
+observed samples, not guarantees about a provider's complete inventory.
+
+## Scenarios and target health
+
+A scenario is a strict, versioned JSON document containing named targets and
+target-specific HTTP status, content, JSON, size, throughput, and body-hash
+rules. Matrix mode tests every target for every round and qualifies a proxy only
+when the configured target quorum passes. Names let several paths on one origin
+remain distinguishable without persisting sensitive target paths or queries.
+
+```sh
+relayprobe check --scenario examples/scenario.json --preflight strict proxies.txt
+```
+
+Preflight checks target health directly before proxy work. `report` records
+failures and continues; `strict` stops before validation. Direct requests still
+use the destination policy, pinned approved addresses, normal TLS verification,
+bounded reads, and no environment proxy.
+
 ## Configuration
 
 Precedence is command-line flags, `RELAYPROBE_*` environment variables, a JSON
@@ -250,11 +290,12 @@ Environment configuration covers every persistent engine setting:
 | Area | Variables |
 |---|---|
 | Concurrency | `RELAYPROBE_CONCURRENCY`, `RELAYPROBE_QUEUE_SIZE`, `RELAYPROBE_PER_TARGET_CONCURRENCY`, `RELAYPROBE_REQUESTS_PER_SECOND` |
-| Measurements | `RELAYPROBE_REPEAT`, `RELAYPROBE_MIN_SUCCESS_RATE`, `RELAYPROBE_STOP_ON_SUCCESS`, `RELAYPROBE_RETRY_PERMANENT_FAILURES` |
+| Measurements | `RELAYPROBE_REPEAT`, `RELAYPROBE_MIN_SUCCESS_RATE`, `RELAYPROBE_STOP_ON_SUCCESS`, `RELAYPROBE_RETRY_PERMANENT_FAILURES`, `RELAYPROBE_ROTATION_SAMPLES`, `RELAYPROBE_ROTATION_INTERVAL` |
 | Time | `RELAYPROBE_CONNECT_TIMEOUT`, `RELAYPROBE_REQUEST_TIMEOUT`, `RELAYPROBE_DNS_CACHE_TTL`, `RELAYPROBE_RETRY_BACKOFF`, `RELAYPROBE_PROGRESS_INTERVAL` |
-| Destinations | `RELAYPROBE_TARGETS`, `RELAYPROBE_ALLOWED_TARGET_HOSTS`, `RELAYPROBE_MAX_REDIRECTS`, `RELAYPROBE_ALLOW_PRIVATE_TARGETS`, `RELAYPROBE_ALLOW_REMOTE_DNS` |
-| Response qualification | `RELAYPROBE_MIN_RESPONSE_BYTES`, `RELAYPROBE_MIN_THROUGHPUT_KBPS`, `RELAYPROBE_REQUIRE_TEXT`, `RELAYPROBE_REJECT_TEXT`, `RELAYPROBE_EXPECT_JSON`, `RELAYPROBE_ANONYMITY_BASELINE_IP` |
-| Resource limits | `RELAYPROBE_MAX_INPUT_BYTES`, `RELAYPROBE_MAX_RESPONSE_BYTES` |
+| Destinations | `RELAYPROBE_TARGETS`, `RELAYPROBE_ALLOWED_TARGET_HOSTS`, `RELAYPROBE_MAX_REDIRECTS`, `RELAYPROBE_ALLOW_PRIVATE_TARGETS`, `RELAYPROBE_ALLOW_REMOTE_DNS`, `RELAYPROBE_TARGET_MATRIX`, `RELAYPROBE_TARGET_QUORUM`, `RELAYPROBE_PREFLIGHT` |
+| Response qualification | `RELAYPROBE_MIN_RESPONSE_BYTES`, `RELAYPROBE_MIN_THROUGHPUT_KBPS`, `RELAYPROBE_REQUIRE_TEXT`, `RELAYPROBE_REJECT_TEXT`, `RELAYPROBE_EXPECT_JSON`, `RELAYPROBE_EXPECTED_BODY_SHA256`, `RELAYPROBE_ANONYMITY_BASELINE_IP` |
+| TLS trust | `RELAYPROBE_CA_BUNDLE`, `RELAYPROBE_PROXY_CA_BUNDLE` |
+| Resource limits | `RELAYPROBE_MAX_INPUT_BYTES`, `RELAYPROBE_MAX_INPUT_ENTRIES`, `RELAYPROBE_MAX_RESPONSE_BYTES` |
 | Persistence and metadata | `RELAYPROBE_DATA_DIR`, `RELAYPROBE_SAVE`, `RELAYPROBE_METADATA_FILE` |
 
 List values are comma-separated. Boolean values use Go boolean syntax such as
@@ -285,9 +326,24 @@ list with credentials, mode 0600. It commits only after a complete run, refuses
 to replace a file without `--force`, and cannot overwrite an input path. Treat
 the resulting file as a secret.
 
+`--checkpoint PATH` appends each completed redacted result and synchronizes at a
+bounded interval. `--resume PATH` repairs an incomplete final line, reloads
+completed endpoint IDs, and skips them. Resume identity is deliberately
+credential-free: credential variants sharing one protocol, host, and port are
+treated as the same endpoint across sessions. Use separate checkpoints when
+testing alternate credentials for one endpoint. Restored results are included
+in cumulative summaries and quality checks; throughput reports only new work.
+Because checkpoints are redacted, `--resume` cannot be combined with a new
+credential-bearing `--working-output`.
+
+Quality policies use strict schema-versioned JSON. A failed policy commits the
+completed outputs and returns exit 5. `--junit-output` creates an atomic mode-0600
+report for CI. See [the example policy](examples/quality-policy.json).
+
 Saved results can be filtered or exported using status, protocol, endpoint,
 exit IP, anonymity, maximum latency, minimum score, minimum throughput, country,
-ASN, and network type. File exports are mode 0600 and atomically committed.
+ASN, network type, pool label, rotation class, and unique-exit count. File
+exports are mode 0600 and atomically committed.
 
 ```sh
 relayprobe export --run latest --status ok --max-latency 400 --min-score 75 --country US --network-type residential --format txt --output us-residential.txt
@@ -304,7 +360,7 @@ Statuses are `ok`, `failed`, `timeout`, `auth_failed`, `policy_blocked`,
 | 2 | Invalid command, option, or configuration |
 | 3 | Operational failure |
 | 4 | No valid input |
-| 5 | The `--require-success` or `--require-count` threshold was not met |
+| 5 | A success threshold or quality policy was not met |
 | 130 | Interrupted by signal |
 
 ## Shell completion
@@ -320,6 +376,8 @@ relayprobe completion fish > ~/.config/fish/completions/relayprobe.fish
 - [Architecture](docs/ARCHITECTURE.md)
 - [Security model](docs/SECURITY.md)
 - [Data schemas](docs/SCHEMAS.md)
+- [Validation scenarios](docs/SCENARIOS.md)
+- [Automation, checkpoints, sharding, and quality gates](docs/AUTOMATION.md)
 - [Offline metadata](docs/METADATA.md)
 - [Benchmarks](docs/BENCHMARKS.md)
 - [Project status](docs/PROJECT_STATUS.md)
@@ -336,6 +394,9 @@ RelayProbe validates only explicitly supplied, authorized proxy endpoints. It
 does not discover public proxies, scan networks, evade controls, or bypass rate
 limits. SOCKS4 supports IPv4 destinations; SOCKS4a remote resolution is opt-in.
 History is a local single-user JSONL store rather than a multi-user database.
+Native MMDB and end-to-end HTTP/2 proxy requests are not currently implemented;
+metadata uses the documented offline CSV/gzip format and validation requests use
+HTTP/1.1 after protocol negotiation. Direct preflight may negotiate HTTP/2.
 Real network throughput depends primarily on proxy latency, target behavior,
 timeouts, file descriptor limits, and local network conditions.
 

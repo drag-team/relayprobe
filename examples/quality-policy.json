@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "min_processed": 100,
+  "min_successful": 10,
+  "min_success_rate": 0.1,
+  "max_failure_rate": 0.85,
+  "max_inconclusive_rate": 0.1,
+  "max_timeout_rate": 0.2,
+  "max_p95_ms": 5000,
+  "require_preflight": true,
+  "target_min_success_rate": {
+    "connectivity": 0.8,
+    "controlled-api": 0.8
+  }
+}

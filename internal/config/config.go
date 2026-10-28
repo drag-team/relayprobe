@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,43 +14,69 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 type Config struct {
-	Concurrency       int           `json:"concurrency"`
-	QueueSize         int           `json:"queue_size"`
-	PerTarget         int           `json:"per_target_concurrency"`
-	RateLimit         float64       `json:"requests_per_second"`
-	ConnectTimeout    time.Duration `json:"-"`
-	RequestTimeout    time.Duration `json:"-"`
-	ConnectTimeoutRaw string        `json:"connect_timeout"`
-	RequestTimeoutRaw string        `json:"request_timeout"`
-	Repeat            int           `json:"repeat"`
-	MinSuccessRate    float64       `json:"min_success_rate"`
-	Targets           []string      `json:"targets"`
-	MaxRedirects      int           `json:"max_redirects"`
-	MaxInputBytes     int64         `json:"max_input_bytes"`
-	MaxResponseBytes  int64         `json:"max_response_bytes"`
-	MinResponseBytes  int64         `json:"min_response_bytes"`
-	MinThroughputKBPS float64       `json:"min_throughput_kbps"`
-	RequireText       []string      `json:"require_text,omitempty"`
-	RejectText        []string      `json:"reject_text,omitempty"`
-	ExpectJSON        []string      `json:"expect_json,omitempty"`
-	AnonymityBaseline string        `json:"anonymity_baseline_ip,omitempty"`
-	MetadataFile      string        `json:"metadata_file,omitempty"`
-	AllowPrivate      bool          `json:"allow_private_targets"`
-	AllowRemoteDNS    bool          `json:"allow_remote_dns"`
-	RetryPermanent    bool          `json:"retry_permanent_failures"`
-	StopOnSuccess     bool          `json:"stop_on_success"`
-	RetryBackoff      time.Duration `json:"-"`
-	RetryBackoffRaw   string        `json:"retry_backoff"`
-	DNSCacheTTL       time.Duration `json:"-"`
-	DNSCacheTTLRaw    string        `json:"dns_cache_ttl"`
-	AllowedHosts      []string      `json:"allowed_target_hosts"`
-	DataDir           string        `json:"data_dir"`
-	Save              bool          `json:"save"`
-	ProgressInterval  time.Duration `json:"-"`
-	ProgressRaw       string        `json:"progress_interval"`
+	Concurrency       int                      `json:"concurrency"`
+	QueueSize         int                      `json:"queue_size"`
+	PerTarget         int                      `json:"per_target_concurrency"`
+	RateLimit         float64                  `json:"requests_per_second"`
+	ConnectTimeout    time.Duration            `json:"-"`
+	RequestTimeout    time.Duration            `json:"-"`
+	ConnectTimeoutRaw string                   `json:"connect_timeout"`
+	RequestTimeoutRaw string                   `json:"request_timeout"`
+	Repeat            int                      `json:"repeat"`
+	MinSuccessRate    float64                  `json:"min_success_rate"`
+	Targets           []string                 `json:"targets"`
+	TargetRules       map[string]ResponseRules `json:"target_rules,omitempty"`
+	TargetLabels      map[string]string        `json:"target_labels,omitempty"`
+	MaxRedirects      int                      `json:"max_redirects"`
+	MaxInputBytes     int64                    `json:"max_input_bytes"`
+	MaxInputEntries   int                      `json:"max_input_entries"`
+	MaxResponseBytes  int64                    `json:"max_response_bytes"`
+	MinResponseBytes  int64                    `json:"min_response_bytes"`
+	MinThroughputKBPS float64                  `json:"min_throughput_kbps"`
+	ExpectedBodySHA   string                   `json:"expected_body_sha256,omitempty"`
+	RequireText       []string                 `json:"require_text,omitempty"`
+	RejectText        []string                 `json:"reject_text,omitempty"`
+	ExpectJSON        []string                 `json:"expect_json,omitempty"`
+	AnonymityBaseline string                   `json:"anonymity_baseline_ip,omitempty"`
+	MetadataFile      string                   `json:"metadata_file,omitempty"`
+	CABundle          string                   `json:"ca_bundle,omitempty"`
+	ProxyCABundle     string                   `json:"proxy_ca_bundle,omitempty"`
+	TargetMatrix      bool                     `json:"target_matrix"`
+	TargetQuorum      int                      `json:"target_quorum"`
+	RotationSamples   int                      `json:"rotation_samples"`
+	RotationInterval  time.Duration            `json:"-"`
+	RotationRaw       string                   `json:"rotation_interval"`
+	Preflight         string                   `json:"preflight"`
+	AutoConcurrency   bool                     `json:"-"`
+	ScenarioName      string                   `json:"-"`
+	AllowPrivate      bool                     `json:"allow_private_targets"`
+	AllowRemoteDNS    bool                     `json:"allow_remote_dns"`
+	RetryPermanent    bool                     `json:"retry_permanent_failures"`
+	StopOnSuccess     bool                     `json:"stop_on_success"`
+	RetryBackoff      time.Duration            `json:"-"`
+	RetryBackoffRaw   string                   `json:"retry_backoff"`
+	DNSCacheTTL       time.Duration            `json:"-"`
+	DNSCacheTTLRaw    string                   `json:"dns_cache_ttl"`
+	AllowedHosts      []string                 `json:"allowed_target_hosts"`
+	DataDir           string                   `json:"data_dir"`
+	Save              bool                     `json:"save"`
+	ProgressInterval  time.Duration            `json:"-"`
+	ProgressRaw       string                   `json:"progress_interval"`
+}
+
+type ResponseRules struct {
+	MinHTTPStatus     int      `json:"min_http_status,omitempty"`
+	MaxHTTPStatus     int      `json:"max_http_status,omitempty"`
+	MinResponseBytes  int64    `json:"min_response_bytes,omitempty"`
+	MinThroughputKBPS float64  `json:"min_throughput_kbps,omitempty"`
+	RequireText       []string `json:"require_text,omitempty"`
+	RejectText        []string `json:"reject_text,omitempty"`
+	ExpectJSON        []string `json:"expect_json,omitempty"`
+	ExpectedBodySHA   string   `json:"expected_body_sha256,omitempty"`
 }
 
 func Defaults() Config {
@@ -58,10 +85,11 @@ func Defaults() Config {
 		ConnectTimeout: 5 * time.Second, RequestTimeout: 12 * time.Second,
 		ConnectTimeoutRaw: "5s", RequestTimeoutRaw: "12s",
 		Repeat: 2, MinSuccessRate: 0.5, Targets: []string{"https://example.com/"}, MaxRedirects: 2,
-		MaxInputBytes: 256 << 20, MaxResponseBytes: 1 << 20,
+		MaxInputBytes: 256 << 20, MaxInputEntries: 1_000_000, MaxResponseBytes: 1 << 20,
 		AllowedHosts: []string{"example.com"},
 		DNSCacheTTL:  5 * time.Minute, DNSCacheTTLRaw: "5m",
 		RetryBackoff: 100 * time.Millisecond, RetryBackoffRaw: "100ms",
+		RotationRaw: "0s", Preflight: "off",
 		DataDir: defaultDataDir(), ProgressInterval: 500 * time.Millisecond, ProgressRaw: "500ms",
 	}
 }
@@ -83,7 +111,8 @@ func Load(path string) (Config, error) {
 			return c, fmt.Errorf("read config: %w", err)
 		}
 		defer f.Close()
-		dec := json.NewDecoder(f)
+		limited := &io.LimitedReader{R: f, N: (1 << 20) + 1}
+		dec := json.NewDecoder(limited)
 		dec.DisallowUnknownFields()
 		if err := dec.Decode((*diskConfig)(&c)); err != nil {
 			return c, fmt.Errorf("parse config: %w", err)
@@ -91,6 +120,9 @@ func Load(path string) (Config, error) {
 		var extra any
 		if err := dec.Decode(&extra); err != io.EOF {
 			return c, errors.New("parse config: multiple JSON values")
+		}
+		if limited.N <= 0 {
+			return c, errors.New("configuration file exceeds 1 MiB")
 		}
 	}
 	if err := applyEnv(&c); err != nil {
@@ -112,6 +144,9 @@ func applyEnv(c *Config) error {
 		{"RELAYPROBE_PER_TARGET_CONCURRENCY", &c.PerTarget},
 		{"RELAYPROBE_REPEAT", &c.Repeat},
 		{"RELAYPROBE_MAX_REDIRECTS", &c.MaxRedirects},
+		{"RELAYPROBE_TARGET_QUORUM", &c.TargetQuorum},
+		{"RELAYPROBE_ROTATION_SAMPLES", &c.RotationSamples},
+		{"RELAYPROBE_MAX_INPUT_ENTRIES", &c.MaxInputEntries},
 	} {
 		if err := envInt(item.name, item.dst); err != nil {
 			return err
@@ -150,6 +185,7 @@ func applyEnv(c *Config) error {
 		{"RELAYPROBE_RETRY_PERMANENT_FAILURES", &c.RetryPermanent},
 		{"RELAYPROBE_STOP_ON_SUCCESS", &c.StopOnSuccess},
 		{"RELAYPROBE_SAVE", &c.Save},
+		{"RELAYPROBE_TARGET_MATRIX", &c.TargetMatrix},
 	} {
 		if err := envBool(item.name, item.dst); err != nil {
 			return err
@@ -166,6 +202,18 @@ func applyEnv(c *Config) error {
 	}
 	if v := os.Getenv("RELAYPROBE_METADATA_FILE"); v != "" {
 		c.MetadataFile = v
+	}
+	if v := os.Getenv("RELAYPROBE_CA_BUNDLE"); v != "" {
+		c.CABundle = v
+	}
+	if v := os.Getenv("RELAYPROBE_PROXY_CA_BUNDLE"); v != "" {
+		c.ProxyCABundle = v
+	}
+	if v := os.Getenv("RELAYPROBE_EXPECTED_BODY_SHA256"); v != "" {
+		c.ExpectedBodySHA = strings.ToLower(strings.TrimSpace(v))
+	}
+	if v := os.Getenv("RELAYPROBE_PREFLIGHT"); v != "" {
+		c.Preflight = strings.ToLower(strings.TrimSpace(v))
 	}
 	if v := os.Getenv("RELAYPROBE_TARGETS"); v != "" {
 		c.Targets = envList(v)
@@ -190,6 +238,9 @@ func applyEnv(c *Config) error {
 	}
 	if v := os.Getenv("RELAYPROBE_RETRY_BACKOFF"); v != "" {
 		c.RetryBackoffRaw = v
+	}
+	if v := os.Getenv("RELAYPROBE_ROTATION_INTERVAL"); v != "" {
+		c.RotationRaw = v
 	}
 	if v := os.Getenv("RELAYPROBE_PROGRESS_INTERVAL"); v != "" {
 		c.ProgressRaw = v
@@ -277,6 +328,9 @@ func (c *Config) ParseDurations() error {
 	if c.RetryBackoff, err = time.ParseDuration(c.RetryBackoffRaw); err != nil {
 		return fmt.Errorf("invalid retry_backoff: %w", err)
 	}
+	if c.RotationInterval, err = time.ParseDuration(c.RotationRaw); err != nil {
+		return fmt.Errorf("invalid rotation_interval: %w", err)
+	}
 	return nil
 }
 
@@ -311,6 +365,12 @@ func (c Config) Validate() error {
 	if c.RetryBackoff < 0 || c.RetryBackoff > 30*time.Second {
 		return errors.New("retry_backoff must be between 0 and 30s")
 	}
+	if c.RotationInterval < 0 || c.RotationInterval > time.Hour {
+		return errors.New("rotation_interval must be between 0 and 1h")
+	}
+	if c.RotationSamples != 0 && (c.RotationSamples < 2 || c.RotationSamples > 50) {
+		return errors.New("rotation_samples must be 0 (disabled) or between 2 and 50")
+	}
 	if c.ProgressInterval < 50*time.Millisecond || c.ProgressInterval > time.Minute {
 		return errors.New("progress_interval must be between 50ms and 1m")
 	}
@@ -319,6 +379,9 @@ func (c Config) Validate() error {
 	}
 	if c.MaxInputBytes < 1 || c.MaxInputBytes > 10<<30 {
 		return errors.New("max_input_bytes is outside safe limits")
+	}
+	if c.MaxInputEntries < 1 || c.MaxInputEntries > 50_000_000 {
+		return errors.New("max_input_entries must be between 1 and 50000000")
 	}
 	if c.MaxResponseBytes < 1024 || c.MaxResponseBytes > 64<<20 {
 		return errors.New("max_response_bytes must be between 1KiB and 64MiB")
@@ -331,6 +394,14 @@ func (c Config) Validate() error {
 	}
 	if c.MinThroughputKBPS > 0 && c.MinResponseBytes < 16<<10 {
 		return errors.New("min_response_bytes must be at least 16384 when enforcing throughput")
+	}
+	if c.ExpectedBodySHA != "" {
+		if len(c.ExpectedBodySHA) != 64 {
+			return errors.New("expected_body_sha256 must contain 64 hexadecimal characters")
+		}
+		if _, err := hex.DecodeString(c.ExpectedBodySHA); err != nil {
+			return errors.New("expected_body_sha256 must contain 64 hexadecimal characters")
+		}
 	}
 	if len(c.RequireText) > 16 || len(c.RejectText) > 16 || len(c.ExpectJSON) > 16 {
 		return errors.New("at most 16 rules of each content assertion type are allowed")
@@ -362,22 +433,75 @@ func (c Config) Validate() error {
 	if len(c.Targets) > 32 {
 		return errors.New("at most 32 validation targets are allowed")
 	}
-	for _, raw := range c.Targets {
+	if c.TargetQuorum < 0 || c.TargetQuorum > len(c.Targets) {
+		return errors.New("target_quorum must be between 0 and the number of targets")
+	}
+	if c.TargetQuorum > 0 && !c.TargetMatrix {
+		return errors.New("target_quorum requires target_matrix")
+	}
+	effectiveRepeats := c.Repeat
+	if c.RotationSamples > effectiveRepeats {
+		effectiveRepeats = c.RotationSamples
+	}
+	if c.TargetMatrix && len(c.Targets)*effectiveRepeats > 1000 {
+		return errors.New("target matrix exceeds the 1000-attempt per-proxy safety limit")
+	}
+	if c.Preflight != "off" && c.Preflight != "report" && c.Preflight != "strict" {
+		return errors.New("preflight must be off, report, or strict")
+	}
+	for _, path := range []string{c.CABundle, c.ProxyCABundle} {
+		if len(path) > 4096 || strings.ContainsAny(path, "\r\n\x00") {
+			return errors.New("CA bundle path is invalid")
+		}
+	}
+	for index, raw := range c.Targets {
 		if len(raw) > 2048 {
-			return errors.New("validation target URL exceeds 2048 bytes")
+			return fmt.Errorf("validation target %d URL exceeds 2048 bytes", index+1)
 		}
 		u, err := url.Parse(raw)
 		if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") {
-			return fmt.Errorf("invalid target URL %q", raw)
+			return fmt.Errorf("validation target %d has an invalid URL", index+1)
 		}
 		if u.User != nil {
-			return fmt.Errorf("target URL %q must not contain credentials", raw)
+			return fmt.Errorf("validation target %d must not contain credentials", index+1)
 		}
 		if port := u.Port(); port != "" {
 			n, e := strconv.ParseUint(port, 10, 16)
 			if e != nil || n == 0 {
-				return fmt.Errorf("target URL %q has an invalid port", raw)
+				return fmt.Errorf("validation target %d has an invalid port", index+1)
 			}
+		}
+	}
+	knownTargets := make(map[string]struct{}, len(c.Targets))
+	for _, target := range c.Targets {
+		knownTargets[target] = struct{}{}
+	}
+	for target, rules := range c.TargetRules {
+		if _, ok := knownTargets[target]; !ok {
+			return errors.New("target_rules contains a target not present in targets")
+		}
+		if err := validateResponseRules(rules, c.MaxResponseBytes); err != nil {
+			return fmt.Errorf("target_rules entry is invalid: %w", err)
+		}
+	}
+	targetNames := make(map[string]struct{}, len(c.Targets))
+	for _, target := range c.Targets {
+		name := c.TargetLabels[target]
+		if name == "" {
+			u, _ := url.Parse(target)
+			name = strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host) + "/"
+		}
+		if _, duplicate := targetNames[name]; duplicate {
+			return fmt.Errorf("validation targets require unique origins or explicit target_labels; duplicate %q", name)
+		}
+		targetNames[name] = struct{}{}
+	}
+	for target, label := range c.TargetLabels {
+		if _, ok := knownTargets[target]; !ok {
+			return errors.New("target_labels contains a target not present in targets")
+		}
+		if len(label) < 1 || len(label) > 64 || strings.IndexFunc(label, unicode.IsControl) >= 0 {
+			return errors.New("target labels must contain 1 to 64 safe characters")
 		}
 	}
 	if len(c.AllowedHosts) > 64 {
@@ -392,6 +516,47 @@ func (c Config) Validate() error {
 	return nil
 }
 
+func validateResponseRules(rules ResponseRules, maxResponseBytes int64) error {
+	if rules.MinHTTPStatus < 0 || rules.MinHTTPStatus > 599 || rules.MaxHTTPStatus < 0 || rules.MaxHTTPStatus > 599 {
+		return errors.New("HTTP status bounds must be between 0 and 599")
+	}
+	if rules.MinHTTPStatus > 0 && rules.MaxHTTPStatus > 0 && rules.MinHTTPStatus > rules.MaxHTTPStatus {
+		return errors.New("minimum HTTP status must not exceed maximum")
+	}
+	if rules.MinResponseBytes < 0 || rules.MinResponseBytes > maxResponseBytes {
+		return errors.New("minimum response size is outside configured limits")
+	}
+	if math.IsNaN(rules.MinThroughputKBPS) || math.IsInf(rules.MinThroughputKBPS, 0) || rules.MinThroughputKBPS < 0 || rules.MinThroughputKBPS > 100_000_000 {
+		return errors.New("minimum throughput is outside configured limits")
+	}
+	if rules.MinThroughputKBPS > 0 && rules.MinResponseBytes < 16<<10 {
+		return errors.New("minimum response size must be at least 16384 when enforcing throughput")
+	}
+	if len(rules.RequireText) > 16 || len(rules.RejectText) > 16 || len(rules.ExpectJSON) > 16 {
+		return errors.New("at most 16 rules of each assertion type are allowed")
+	}
+	for _, value := range append(append([]string{}, rules.RequireText...), rules.RejectText...) {
+		if len(value) < 1 || len(value) > 256 {
+			return errors.New("content assertion strings must contain 1 to 256 bytes")
+		}
+	}
+	for _, value := range rules.ExpectJSON {
+		path, _, ok := strings.Cut(value, "=")
+		if !ok || path == "" || len(value) > 512 {
+			return errors.New("JSON assertions must use path=value and contain at most 512 bytes")
+		}
+	}
+	if rules.ExpectedBodySHA != "" {
+		if len(rules.ExpectedBodySHA) != 64 {
+			return errors.New("expected body SHA-256 must contain 64 hexadecimal characters")
+		}
+		if _, err := hex.DecodeString(rules.ExpectedBodySHA); err != nil {
+			return errors.New("expected body SHA-256 must contain 64 hexadecimal characters")
+		}
+	}
+	return nil
+}
+
 func (c Config) MarshalJSON() ([]byte, error) {
 	type alias Config
 	a := alias(c)
@@ -400,5 +565,6 @@ func (c Config) MarshalJSON() ([]byte, error) {
 	a.ProgressRaw = c.ProgressInterval.String()
 	a.DNSCacheTTLRaw = c.DNSCacheTTL.String()
 	a.RetryBackoffRaw = c.RetryBackoff.String()
+	a.RotationRaw = c.RotationInterval.String()
 	return json.MarshalIndent(a, "", "  ")
 }
