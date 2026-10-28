@@ -35,13 +35,19 @@ It is not represented as a completed independent security audit.
 ## Verification record
 
 - `make check`: passed (`go vet`, all unit/integration tests, race detector).
-- Parser fuzzing: 282,033 executions in 10 seconds with no failure.
-- Package coverage: core packages range from 46.1% to 100%; engine 63.7%,
-  protocol 75.8%, input 80.2%, policy 85.7%, and metadata 81.1%.
+- Parser fuzzing: 239,885 executions in 10 seconds with no failure.
+- HTTP response fuzzing: 190,621 executions in 10 seconds covering valid,
+  truncated, malformed, and oversized inputs with no failure.
+- Package coverage: core packages range from 46.1% to 100%; engine 65.9%,
+  protocol 77.1%, input 80.3%, policy 85.7%, and metadata 81.1%.
 - Controlled 500,000-item scheduler: 812,682 items/s median at concurrency 128
   across three runs on the non-isolated delivery host.
 - Offline IPv4 metadata lookup: 411 ns/op median, zero allocations across three
   benchmark samples.
+- A 200,000-record import comparison measured 0.61 s and 15.8 MiB maximum RSS
+  for the current parser versus 1.21 s and 18.6 MiB for commit `74427aa`.
+- The bounded HTTP response reader measured 6.08 us/op and 5,123 B/op after
+  removing duplicate buffering.
 
 The benchmark conditions and historical results are in
 [BENCHMARKS.md](BENCHMARKS.md). Controlled local fixtures are used instead of

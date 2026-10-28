@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -25,6 +26,25 @@ import (
 	"github.com/drag-team/relayprobe/internal/model"
 	"github.com/drag-team/relayprobe/internal/policy"
 )
+
+type memoryConn struct{ *bytes.Reader }
+
+func (c *memoryConn) Write(data []byte) (int, error) { return len(data), nil }
+func (c *memoryConn) Close() error                   { return nil }
+func (c *memoryConn) LocalAddr() net.Addr            { return memoryAddr("local") }
+func (c *memoryConn) RemoteAddr() net.Addr           { return memoryAddr("remote") }
+func (c *memoryConn) SetDeadline(time.Time) error    { return nil }
+func (c *memoryConn) SetReadDeadline(time.Time) error {
+	return nil
+}
+func (c *memoryConn) SetWriteDeadline(time.Time) error {
+	return nil
+}
+
+type memoryAddr string
+
+func (a memoryAddr) Network() string { return "memory" }
+func (a memoryAddr) String() string  { return string(a) }
 
 func destination() policy.Destination {
 	u, _ := url.Parse("https://target.test/")
@@ -510,5 +530,50 @@ func TestSOCKS5DestinationAddressMode(t *testing.T) {
 				t.Fatalf("got %q want %q", value, tc.value)
 			}
 		})
+	}
+}
+
+func FuzzReadResponseLimited(f *testing.F) {
+	for _, data := range [][]byte{
+		[]byte("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"),
+		[]byte("HTTP/1.1 407 Proxy Authentication Required\r\n\r\n"),
+		[]byte("not http"),
+		bytes.Repeat([]byte("x"), 5000),
+	} {
+		f.Add(data)
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		conn := &memoryConn{Reader: bytes.NewReader(data)}
+		response, _, err := ReadResponseLimited(conn, &http.Request{Method: http.MethodGet}, 4096)
+		if err != nil {
+			return
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
+		_ = response.Body.Close()
+	})
+}
+
+func TestReadResponseLimitedRejectsLFOnlyHeaders(t *testing.T) {
+	data := []byte("HTTP/1.1 200 OK\nContent-Length: 2\n\nok")
+	conn := &memoryConn{Reader: bytes.NewReader(data)}
+	if response, _, err := ReadResponseLimited(conn, &http.Request{Method: http.MethodGet}, 4096); err == nil {
+		_ = response.Body.Close()
+		t.Fatal("accepted LF-only response headers")
+	}
+}
+
+func BenchmarkReadResponseLimited(b *testing.B) {
+	payload := []byte("HTTP/1.1 200 OK\r\nServer: relayprobe-fixture\r\nContent-Type: application/json\r\nContent-Length: 15\r\nX-Request-ID: benchmark\r\n\r\n{\"status\":\"ok\"}")
+	b.SetBytes(int64(len(payload)))
+	b.ReportAllocs()
+	request := &http.Request{Method: http.MethodGet}
+	for range b.N {
+		conn := &memoryConn{Reader: bytes.NewReader(payload)}
+		response, _, err := ReadResponseLimited(conn, request, 64<<10)
+		if err != nil {
+			b.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, response.Body)
+		_ = response.Body.Close()
 	}
 }

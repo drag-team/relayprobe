@@ -104,3 +104,31 @@ The 1,000-record parser benchmark then measured 3.81 ms/op median for plain text
 allocations respectively. The host was not isolated and the gzip samples had
 visible scheduler variance, so these figures are regression evidence rather
 than performance guarantees.
+
+On 2026-10-28, the 0.7.0 development parser was profiled and changed to use
+direct endpoint parsing, allocation-free hostname validation, `net/netip`, and
+two process-local `hash/maphash` seeds compressed into a 96-bit fingerprint.
+Five to seven samples on the same Go 1.26.8 four-vCPU host produced:
+
+| Mode | Median time/1,000 | Throughput | Bytes/op | Allocations/op |
+|---|---:|---:|---:|---:|
+| Before, text | 3.03 ms | 6.24 MB/s | 345,190 | 5,007 |
+| Current, exact dedup | 0.89 ms | 21.3 MB/s | 148,876 | 1,026 |
+| Current, no dedup | 0.47 ms | 40.5 MB/s | 89,712 | 1,004 |
+| Current, gzip dedup | 1.01 ms | 18.7 MB/s | 203,511 | 1,047 |
+
+An executable-level import of the same 200,000-entry, 5,088,895-byte text file
+was alternated five times between commit `74427aa` and the current tree. Output
+was redirected to `/dev/null`; medians were 1.21 s and 19,032 KiB maximum RSS
+before, versus 0.61 s and 16,200 KiB currently. This measures parsing,
+deduplication, normalization, and output formatting together.
+
+The HTTP response parser benchmark uses a fixed in-memory HTTP/1.1 response.
+Replacing duplicated header buffers with one limit-enforcing reader reduced the
+median from 10.03 us/op, 13,486 B/op, and 23 allocations to 6.08 us/op,
+5,123 B/op, and 18 allocations. Reproduce the current measurements with:
+
+```sh
+go test -run '^$' -bench '^BenchmarkParser' -benchmem -count=5 ./internal/input
+go test -run '^$' -bench '^BenchmarkReadResponseLimited$' -benchmem -count=5 ./internal/protocol
+```

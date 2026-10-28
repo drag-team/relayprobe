@@ -44,8 +44,10 @@ Credentials present in process arguments may be visible in shell history and the
 process list. Prefer a mode-0600 input file or protected standard input. Both
 username and password are replaced by `***` in ordinary results. Public endpoint
 IDs do not depend on credentials. Exact in-process deduplication uses a randomly
-keyed HMAC so alternate credentials remain distinct without persisting a useful
-credential verifier.
+seeded 96-bit `hash/maphash` fingerprint so alternate credentials remain distinct
+without persisting a useful credential verifier. Seeds are process-local and
+cannot be serialized. The fingerprint is for an in-memory hash table, not for
+authentication or cryptographic integrity.
 
 Normal results and history always redact usernames and passwords. `--working-output` is an
 explicit credential-bearing export for operational use; it creates mode-0600
@@ -66,6 +68,8 @@ request.
 When a credential-bearing input file is readable by group or other users,
 RelayProbe emits a security warning with the observed mode. It does not change
 operator-owned file permissions automatically.
+User-controlled filenames and rejected records are quoted in verbose terminal
+diagnostics so control characters cannot alter terminal or log presentation.
 
 Anonymity observations are limited. Forwarded-header evidence proves that a
 chosen echo target observed a header; its absence cannot prove anonymity. Exit

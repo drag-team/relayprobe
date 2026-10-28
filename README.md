@@ -152,8 +152,8 @@ instead. Bracketed IPv6 must use URI or `host:port` syntax.
 Input is capped at 256 MiB and 1,000,000 records by default across the complete invocation and
 individual text records at 1 MiB. For gzip sources, the aggregate cap applies to
 decompressed bytes. Parsing, validation, persistence, and ordinary output are streamed.
-`--no-deduplicate` avoids retaining endpoint hashes when constant parser memory
-is more important than duplicate suppression.
+`--no-deduplicate` bypasses fingerprint calculation and avoids retaining endpoint
+hashes when constant parser memory is more important than duplicate suppression.
 
 ## Validation model
 
@@ -196,6 +196,12 @@ rate. Defaults are conservative for an ordinary VPS; increasing concurrency
 does not necessarily improve throughput. `--connect-timeout`,
 `--request-timeout`, `--repeat`, `--retry-backoff`, and `--dns-cache-ttl`
 control failure cost and repeat behavior.
+
+`--max-response-bytes` bounds each downloaded response body and defaults to
+1 MiB. Lower it for high-concurrency reachability checks; raise it deliberately
+for controlled throughput targets. Redirect and proxy-authentication response
+bodies are not downloaded because their content is not part of final-target
+qualification.
 
 `--concurrency auto` derives a bounded recommendation from CPU count and the
 current file-descriptor limit, capped at 1024. `relayprobe doctor` reports that

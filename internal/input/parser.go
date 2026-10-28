@@ -4,13 +4,15 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
-	"crypto/rand"
+	"encoding/binary"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/maphash"
 	"io"
 	"net"
+	"net/netip"
 	"net/url"
 	"path/filepath"
 	"strconv"
@@ -57,8 +59,8 @@ type Rejection struct {
 
 type Parser struct {
 	opts      Options
-	seen      map[[16]byte]struct{}
-	dedupKey  [32]byte
+	seen      map[[12]byte]struct{}
+	dedupSeed [2]maphash.Seed
 	usedBytes int64
 	Stats     model.InputStats
 }
@@ -73,9 +75,37 @@ func New(opts Options) *Parser {
 	if opts.DefaultProtocol == "" {
 		opts.DefaultProtocol = model.ProtocolHTTP
 	}
-	p := &Parser{opts: opts, seen: make(map[[16]byte]struct{})}
-	_, _ = rand.Read(p.dedupKey[:])
+	p := &Parser{opts: opts}
+	if opts.Deduplicate {
+		p.seen = make(map[[12]byte]struct{})
+		p.dedupSeed[0] = maphash.MakeSeed()
+		p.dedupSeed[1] = maphash.MakeSeed()
+	}
 	return p
+}
+
+type dedupValue struct {
+	Protocol       model.Protocol
+	Host           string
+	Port           uint16
+	Username       string
+	Password       string
+	HasCredentials bool
+}
+
+func (p *Parser) dedupIdentity(proxy model.Proxy) [12]byte {
+	value := dedupValue{Protocol: proxy.Protocol, Host: proxy.Host, Port: proxy.Port}
+	if proxy.Credentials != nil {
+		value.Username = proxy.Credentials.Username
+		value.Password = proxy.Credentials.Password
+		value.HasCredentials = true
+	}
+	first := maphash.Comparable(p.dedupSeed[0], value)
+	second := maphash.Comparable(p.dedupSeed[1], value)
+	var identity [12]byte
+	binary.LittleEndian.PutUint64(identity[:8], first)
+	binary.LittleEndian.PutUint32(identity[8:], uint32(second))
+	return identity
 }
 
 func ParseProxy(raw string, defaultProtocol model.Protocol) (model.Proxy, error) {
@@ -83,19 +113,31 @@ func ParseProxy(raw string, defaultProtocol model.Protocol) (model.Proxy, error)
 	if raw == "" {
 		return model.Proxy{}, errors.New("empty proxy")
 	}
-	if strings.ContainsAny(raw, "\r\n\x00") {
+	if strings.IndexByte(raw, '\r') >= 0 || strings.IndexByte(raw, '\n') >= 0 || strings.IndexByte(raw, 0) >= 0 {
 		return model.Proxy{}, errors.New("control characters are not allowed")
 	}
-	if !strings.Contains(raw, "://") && !strings.HasPrefix(raw, "[") && strings.Count(raw, ":") == 3 {
+	hasScheme := strings.Contains(raw, "://")
+	if !hasScheme && !strings.HasPrefix(raw, "[") && strings.Count(raw, ":") == 3 {
 		parts := strings.SplitN(raw, ":", 4)
 		if port, portErr := strconv.ParseUint(parts[1], 10, 16); portErr == nil && port > 0 {
 			if parts[2] == "" {
 				return model.Proxy{}, errors.New("proxy username must not be empty")
 			}
-			raw = string(defaultProtocol) + "://" + url.UserPassword(parts[2], parts[3]).String() + "@" + net.JoinHostPort(parts[0], parts[1])
+			protocol, protocolErr := model.ParseProtocol(string(defaultProtocol))
+			if protocolErr != nil {
+				return model.Proxy{}, protocolErr
+			}
+			return buildProxy(protocol, parts[0], parts[1], &model.Credentials{Username: parts[2], Password: parts[3]})
 		}
 	}
-	if !strings.Contains(raw, "://") {
+	if !hasScheme {
+		if host, port, splitErr := net.SplitHostPort(raw); splitErr == nil {
+			protocol, protocolErr := model.ParseProtocol(string(defaultProtocol))
+			if protocolErr != nil {
+				return model.Proxy{}, protocolErr
+			}
+			return buildProxy(protocol, host, port, nil)
+		}
 		raw = string(defaultProtocol) + "://" + raw
 	}
 	u, err := url.Parse(raw)
@@ -112,31 +154,7 @@ func ParseProxy(raw string, defaultProtocol model.Protocol) (model.Proxy, error)
 	if u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
 		return model.Proxy{}, errors.New("proxy URI must not contain path, query, or fragment")
 	}
-	portText := u.Port()
-	if portText == "" {
-		return model.Proxy{}, errors.New("missing proxy port")
-	}
-	port64, err := strconv.ParseUint(portText, 10, 16)
-	if err != nil || port64 == 0 {
-		return model.Proxy{}, errors.New("proxy port must be between 1 and 65535")
-	}
-	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
-	if len(host) > 253 {
-		return model.Proxy{}, errors.New("proxy host is too long")
-	}
-	if ip := net.ParseIP(host); ip == nil {
-		for _, label := range strings.Split(host, ".") {
-			if label == "" || len(label) > 63 {
-				return model.Proxy{}, errors.New("invalid proxy hostname")
-			}
-			for i, r := range label {
-				if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || (r == '-' && i > 0 && i < len(label)-1)) {
-					return model.Proxy{}, errors.New("invalid proxy hostname")
-				}
-			}
-		}
-	}
-	proxy := model.Proxy{Protocol: p, Host: host, Port: uint16(port64)}
+	var credentials *model.Credentials
 	if u.User != nil {
 		pass, ok := u.User.Password()
 		if !ok {
@@ -149,12 +167,85 @@ func ParseProxy(raw string, defaultProtocol model.Protocol) (model.Proxy, error)
 		if pass == "***" {
 			return model.Proxy{}, errors.New("redacted proxy password cannot be reused")
 		}
-		if len(user) > 255 || len(pass) > 255 {
+		credentials = &model.Credentials{Username: user, Password: pass}
+	}
+	return buildProxy(p, u.Hostname(), u.Port(), credentials)
+}
+
+func buildProxy(protocol model.Protocol, rawHost, portText string, credentials *model.Credentials) (model.Proxy, error) {
+	if rawHost == "" {
+		return model.Proxy{}, errors.New("missing proxy host")
+	}
+	if portText == "" {
+		return model.Proxy{}, errors.New("missing proxy port")
+	}
+	port, err := strconv.ParseUint(portText, 10, 16)
+	if err != nil || port == 0 {
+		return model.Proxy{}, errors.New("proxy port must be between 1 and 65535")
+	}
+	host := strings.TrimSuffix(strings.ToLower(rawHost), ".")
+	if len(host) > 253 {
+		return model.Proxy{}, errors.New("proxy host is too long")
+	}
+	if strings.IndexByte(host, ':') >= 0 {
+		address, parseErr := netip.ParseAddr(host)
+		if parseErr != nil {
+			return model.Proxy{}, errors.New("invalid proxy address")
+		}
+		if address.Zone() != "" {
+			return model.Proxy{}, errors.New("scoped proxy addresses are not supported")
+		}
+	} else if numericAddressCandidate(host) {
+		if _, parseErr := netip.ParseAddr(host); parseErr != nil && !validHostname(host) {
+			return model.Proxy{}, errors.New("invalid proxy hostname")
+		}
+	} else if !validHostname(host) {
+		return model.Proxy{}, errors.New("invalid proxy hostname")
+	}
+	if credentials != nil {
+		if credentials.Username == "" {
+			return model.Proxy{}, errors.New("proxy username must not be empty")
+		}
+		if credentials.Password == "***" {
+			return model.Proxy{}, errors.New("redacted proxy password cannot be reused")
+		}
+		if len(credentials.Username) > 255 || len(credentials.Password) > 255 {
 			return model.Proxy{}, errors.New("proxy credentials exceed protocol limits")
 		}
-		proxy.Credentials = &model.Credentials{Username: user, Password: pass}
 	}
-	return proxy, nil
+	return model.Proxy{Protocol: protocol, Host: host, Port: uint16(port), Credentials: credentials}, nil
+}
+
+func numericAddressCandidate(host string) bool {
+	for index := range len(host) {
+		value := host[index]
+		if value != '.' && (value < '0' || value > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func validHostname(host string) bool {
+	if host == "" {
+		return false
+	}
+	labelStart := 0
+	for index := 0; index <= len(host); index++ {
+		if index == len(host) || host[index] == '.' {
+			labelLength := index - labelStart
+			if labelLength == 0 || labelLength > 63 || host[labelStart] == '-' || host[index-1] == '-' {
+				return false
+			}
+			labelStart = index + 1
+			continue
+		}
+		value := host[index]
+		if !((value >= 'a' && value <= 'z') || (value >= '0' && value <= '9') || value == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 func (p *Parser) Emit(r io.Reader, emit func(model.Proxy) error, reject func(Rejection)) error {
@@ -252,8 +343,8 @@ func (p *Parser) accept(raw string, line int, emit func(model.Proxy) error, reje
 		return nil
 	}
 	proxy.Source, proxy.Line = p.opts.Source, line
-	key := proxy.DedupIdentity(p.dedupKey[:])
 	if p.opts.Deduplicate {
+		key := p.dedupIdentity(proxy)
 		if _, ok := p.seen[key]; ok {
 			p.Stats.Duplicates++
 			return nil

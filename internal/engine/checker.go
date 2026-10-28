@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -30,23 +31,25 @@ import (
 )
 
 type Checker struct {
-	Config      config.Config
-	Policy      *policy.Policy
-	Connector   protocol.Connector
-	mu          sync.Mutex
-	targetSem   map[string]chan struct{}
-	TLSConfig   *tls.Config
-	rateMu      sync.Mutex
-	nextStart   time.Time
-	resolveMu   sync.Mutex
-	resolved    map[string]*resolveEntry
-	baseline    netip.Addr
-	Metadata    MetadataLookup
-	requireText []string
-	rejectText  []string
-	expectJSON  []jsonExpectation
-	Label       string
-	targetRules map[string]compiledResponseRules
+	Config          config.Config
+	Policy          *policy.Policy
+	Connector       protocol.Connector
+	mu              sync.Mutex
+	targetSem       map[string]chan struct{}
+	TLSConfig       *tls.Config
+	rateMu          sync.Mutex
+	nextStart       time.Time
+	resolveMu       sync.Mutex
+	resolved        map[string]*resolveEntry
+	baseline        netip.Addr
+	Metadata        MetadataLookup
+	requireText     []string
+	rejectText      []string
+	expectJSON      []jsonExpectation
+	Label           string
+	targetRules     map[string]compiledResponseRules
+	targetNames     map[string]string
+	expectedTargets []string
 }
 
 type jsonExpectation struct {
@@ -78,7 +81,7 @@ type resolveEntry struct {
 
 func NewChecker(c config.Config) *Checker {
 	baseline, _ := netip.ParseAddr(c.AnonymityBaseline)
-	checker := &Checker{Config: c, Policy: policy.New(c.AllowPrivate, c.AllowedHosts), Connector: protocol.Connector{ConnectTimeout: c.ConnectTimeout, AllowRemoteDNS: c.AllowRemoteDNS}, targetSem: make(map[string]chan struct{}), resolved: make(map[string]*resolveEntry), baseline: baseline.Unmap(), targetRules: make(map[string]compiledResponseRules)}
+	checker := &Checker{Config: c, Policy: policy.New(c.AllowPrivate, c.AllowedHosts), Connector: protocol.Connector{ConnectTimeout: c.ConnectTimeout, AllowRemoteDNS: c.AllowRemoteDNS}, targetSem: make(map[string]chan struct{}), resolved: make(map[string]*resolveEntry), baseline: baseline.Unmap(), targetRules: make(map[string]compiledResponseRules), targetNames: make(map[string]string, len(c.Targets)), expectedTargets: make([]string, 0, len(c.Targets))}
 	for _, rule := range c.RequireText {
 		checker.requireText = append(checker.requireText, strings.ToLower(rule))
 	}
@@ -91,6 +94,14 @@ func NewChecker(c config.Config) *Checker {
 	}
 	for target, rules := range c.TargetRules {
 		checker.targetRules[target] = compileResponseRules(rules)
+	}
+	for _, target := range c.Targets {
+		name := c.TargetLabels[target]
+		if name == "" {
+			name = targetOrigin(target)
+		}
+		checker.targetNames[target] = name
+		checker.expectedTargets = append(checker.expectedTargets, name)
 	}
 	return checker
 }
@@ -149,15 +160,9 @@ func (c *Checker) Check(ctx context.Context, p model.Proxy) model.Result {
 	if c.Config.RotationSamples > repeats {
 		repeats = c.Config.RotationSamples
 	}
-	targets := make([]string, 0, repeats*len(c.Config.Targets))
+	attemptCount := repeats
 	if c.Config.TargetMatrix {
-		for round := 0; round < repeats; round++ {
-			targets = append(targets, c.Config.Targets...)
-		}
-	} else {
-		for i := 0; i < repeats; i++ {
-			targets = append(targets, c.Config.Targets[i%len(c.Config.Targets)])
-		}
+		attemptCount *= len(c.Config.Targets)
 	}
 	required := int(math.Ceil(float64(repeats) * c.Config.MinSuccessRate))
 	quorum := 0
@@ -169,7 +174,8 @@ func (c *Checker) Check(ctx context.Context, p model.Proxy) model.Result {
 		required *= quorum
 	}
 	r := model.Result{SchemaVersion: model.SchemaVersion, ID: p.Key(), Proxy: p.SafeURI(), Endpoint: p.Address(), Protocol: p.Protocol, Label: c.Label, RequiredSuccesses: required, TargetQuorum: quorum, CheckedAt: time.Now().UTC(), InputProxy: p.FullURI()}
-	for i, target := range targets {
+	for i := 0; i < attemptCount; i++ {
+		target := c.Config.Targets[i%len(c.Config.Targets)]
 		intervalDue := i > 0 && (!c.Config.TargetMatrix || i%len(c.Config.Targets) == 0)
 		if intervalDue && !c.waitInterval(ctx) {
 			break
@@ -194,11 +200,11 @@ func (c *Checker) Check(ctx context.Context, p model.Proxy) model.Result {
 		if ctx.Err() != nil {
 			break
 		}
-		remaining := len(targets) - (i + 1)
+		remaining := attemptCount - (i + 1)
 		if !c.Config.TargetMatrix && r.Successes+remaining < required {
 			break
 		}
-		if obs.Status != model.StatusOK && i+1 < len(targets) && !c.waitBackoff(ctx, p, i) {
+		if obs.Status != model.StatusOK && i+1 < attemptCount && !c.waitBackoff(ctx, p, i) {
 			break
 		}
 	}
@@ -206,11 +212,7 @@ func (c *Checker) Check(ctx context.Context, p model.Proxy) model.Result {
 	if c.Config.TargetMatrix {
 		expectedPerTarget = repeats
 	}
-	expectedTargets := make([]string, 0, len(c.Config.Targets))
-	for _, target := range c.Config.Targets {
-		expectedTargets = append(expectedTargets, c.targetName(target))
-	}
-	r.TargetResults = intel.TargetResults(r.Observations, c.Config.MinSuccessRate, expectedPerTarget, expectedTargets...)
+	r.TargetResults = intel.TargetResults(r.Observations, c.Config.MinSuccessRate, expectedPerTarget, c.expectedTargets...)
 	r.Rotation = intel.Rotation(r.Observations)
 	if c.Config.TargetMatrix {
 		qualified := 0
@@ -356,7 +358,7 @@ func targetOrigin(raw string) string {
 }
 
 func (c *Checker) targetName(raw string) string {
-	if name := c.Config.TargetLabels[raw]; name != "" {
+	if name := c.targetNames[raw]; name != "" {
 		return name
 	}
 	return targetOrigin(raw)
@@ -524,6 +526,25 @@ func (c *Checker) requestWithRedirects(ctx context.Context, p model.Proxy, dest 
 	defer resp.Body.Close()
 	obs.HTTPStatus = resp.StatusCode
 	obs.ResponseHeaders = selectedHeaders(resp.Header)
+	if resp.StatusCode == http.StatusProxyAuthRequired {
+		return obs, protocol.HTTPProxyAuthError(resp, p.Credentials != nil)
+	}
+	if resp.StatusCode >= 300 && resp.StatusCode <= 399 {
+		if redirectsLeft <= 0 {
+			return obs, &protocol.Error{Stage: model.StageResponse, Status: model.StatusFailed, Code: "redirect_limit", Detail: "redirect limit exceeded"}
+		}
+		location := resp.Header.Get("Location")
+		if location == "" {
+			return obs, &protocol.Error{Stage: model.StageResponse, Status: model.StatusFailed, Code: "invalid_redirect", Detail: "destination redirect did not include a Location header"}
+		}
+		loc, locErr := dest.URL.Parse(location)
+		if locErr != nil {
+			return obs, &protocol.Error{Stage: model.StageResponse, Status: model.StatusFailed, Code: "invalid_redirect", Detail: "destination returned an invalid redirect"}
+		}
+		_ = resp.Body.Close()
+		_ = timed.Conn.Close()
+		return c.followRedirect(ctx, p, loc, redirectsLeft-1, obs, rules)
+	}
 	bodyStart := time.Now()
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, c.Config.MaxResponseBytes+1))
 	bodyDuration := time.Since(bodyStart)
@@ -539,19 +560,6 @@ func (c *Checker) requestWithRedirects(ctx context.Context, p model.Proxy, dest 
 	}
 	if int64(len(body)) > c.Config.MaxResponseBytes {
 		return obs, &protocol.Error{Stage: model.StageResponse, Status: model.StatusFailed, Code: "response_too_large", Detail: "response exceeded configured byte limit"}
-	}
-	if resp.StatusCode == http.StatusProxyAuthRequired {
-		return obs, protocol.HTTPProxyAuthError(resp, p.Credentials != nil)
-	}
-	if resp.StatusCode >= 300 && resp.StatusCode <= 399 {
-		if redirectsLeft <= 0 {
-			return obs, &protocol.Error{Stage: model.StageResponse, Status: model.StatusFailed, Code: "redirect_limit", Detail: "redirect limit exceeded"}
-		}
-		loc, locErr := dest.URL.Parse(resp.Header.Get("Location"))
-		if locErr != nil {
-			return obs, &protocol.Error{Stage: model.StageResponse, Status: model.StatusFailed, Code: "invalid_redirect", Detail: "destination returned an invalid redirect"}
-		}
-		return c.followRedirect(ctx, p, loc, redirectsLeft-1, obs, rules)
 	}
 	if resp.StatusCode < rules.minHTTPStatus || resp.StatusCode > rules.maxHTTPStatus {
 		return obs, &protocol.Error{Stage: model.StageResponse, Status: model.StatusInconclusive, Code: "http_status", Detail: fmt.Sprintf("destination returned HTTP status %d", resp.StatusCode)}
@@ -690,32 +698,16 @@ func statusFor(err error) model.Status {
 }
 func ms(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
 func basicToken(u, p string) string {
-	const table = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-	_ = table
-	return encodeBase64([]byte(u + ":" + p))
-}
-func encodeBase64(src []byte) string {
-	const enc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-	out := make([]byte, 0, (len(src)+2)/3*4)
-	for len(src) >= 3 {
-		v := uint(src[0])<<16 | uint(src[1])<<8 | uint(src[2])
-		out = append(out, enc[v>>18], enc[(v>>12)&63], enc[(v>>6)&63], enc[v&63])
-		src = src[3:]
-	}
-	if len(src) == 1 {
-		v := uint(src[0]) << 16
-		out = append(out, enc[v>>18], enc[(v>>12)&63], '=', '=')
-	} else if len(src) == 2 {
-		v := uint(src[0])<<16 | uint(src[1])<<8
-		out = append(out, enc[v>>18], enc[(v>>12)&63], enc[(v>>6)&63], '=')
-	}
-	return string(out)
+	return base64.StdEncoding.EncodeToString([]byte(u + ":" + p))
 }
 
 func selectedHeaders(h http.Header) map[string]string {
-	out := map[string]string{}
+	var out map[string]string
 	for _, k := range []string{"Server", "Via", "Content-Type", "Content-Length"} {
 		if v := h.Get(k); v != "" {
+			if out == nil {
+				out = make(map[string]string, 4)
+			}
 			if len(v) > 512 {
 				v = v[:512]
 			}
@@ -733,9 +725,10 @@ func extractIntelligence(body []byte, baseline netip.Addr) (string, string, []st
 	exit := ""
 	for _, k := range []string{"ip", "origin", "query"} {
 		if s, ok := v[k].(string); ok {
-			part := strings.TrimSpace(strings.Split(s, ",")[0])
-			if net.ParseIP(part) != nil {
-				exit = part
+			part, _, _ := strings.Cut(s, ",")
+			part = strings.TrimSpace(part)
+			if address, err := netip.ParseAddr(part); err == nil {
+				exit = address.Unmap().String()
 				break
 			}
 		}

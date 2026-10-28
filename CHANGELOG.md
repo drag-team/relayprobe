@@ -21,6 +21,7 @@ All notable changes to RelayProbe are documented in this file. The project uses
 - Interactive saved-result exploration with a non-interactive `results` fallback.
 - Label, rotation class, and unique-exit filtering and sorting.
 - Negotiated proxy authentication-method evidence.
+- Hostile HTTP response fuzzing and a repeatable bounded-header parser benchmark.
 - Public contribution, security, governance, CI, and release documentation.
 - Transparent gzip input for files and standard input, including nested format detection.
 - Atomic `--summary-output` JSON for CI and non-persistent automation.
@@ -43,7 +44,12 @@ All notable changes to RelayProbe are documented in this file. The project uses
 
 - Result schema advanced to version 5.
 - Development version advanced to 0.7.0.
-- Persisted IDs now identify only protocol/host/port; credential-sensitive deduplication uses an ephemeral keyed HMAC.
+- Persisted IDs now identify only protocol/host/port; credential-sensitive deduplication uses ephemeral process-local seeded fingerprints.
+- Plain endpoint parsing uses allocation-minimized host/port and commercial-format fast paths.
+- HTTP response parsing uses one bounded buffered reader and preserves prefetched tunnel bytes without copying complete headers.
+- Target execution is calculated in constant space instead of materializing per-proxy attempt matrices.
+- `--no-deduplicate` now bypasses fingerprint and map initialization completely.
+- `--max-response-bytes` exposes the existing bounded response limit directly on the CLI and in run summaries.
 - Ordinary output and saved history now redact proxy usernames as well as passwords.
 - Saved results are capped at 16 MiB per record and history commits synchronize metadata before publication.
 - Configuration, scenarios, quality policies, CA bundles, checkpoints, and history reads have explicit size or record limits.
@@ -70,6 +76,8 @@ All notable changes to RelayProbe are documented in this file. The project uses
 - Incomplete runs preserve existing summary files rather than replacing them.
 - Forwarding evidence no longer persists header values that may contain a local IP.
 - Metadata enrichment is offline by default and sends no exit IPs to a provider.
+- Redirects without `Location` are rejected explicitly; intermediate redirect and authentication bodies are not downloaded.
+- Verbose rejected-input and credential-file diagnostics quote terminal control characters.
 
 ## [0.4.0] - 2026-10-25
 

@@ -82,7 +82,7 @@ func (c CLI) shard(args []string) int {
 					writer.Abort()
 				}
 			}
-			fmt.Fprintf(c.Stderr, "open shard %s: %v\n", path, err)
+			fmt.Fprintf(c.Stderr, "open shard %q: %v\n", path, err)
 			return ExitOperational
 		}
 	}
@@ -111,7 +111,7 @@ func (c CLI) shard(args []string) int {
 	}
 	reject := func(rejection inputpkg.Rejection) {
 		if *verbose {
-			fmt.Fprintf(c.Stderr, "rejected %s:%d: %s\n", rejection.Source, rejection.Line, rejection.Reason)
+			fmt.Fprintf(c.Stderr, "rejected %q:%d: %s\n", rejection.Source, rejection.Line, rejection.Reason)
 		}
 	}
 	if err := c.emitFiles(parser, fs.Args(), format, emit, reject); err != nil {
@@ -123,7 +123,7 @@ func (c CLI) shard(args []string) int {
 	}
 	for i, writer := range writers {
 		if err := writer.Commit(); err != nil {
-			fmt.Fprintf(c.Stderr, "commit shard %s: %v\n", paths[i], err)
+			fmt.Fprintf(c.Stderr, "commit shard %q: %v\n", paths[i], err)
 			return ExitOperational
 		}
 	}

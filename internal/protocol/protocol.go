@@ -2,7 +2,6 @@ package protocol
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/base64"
@@ -220,29 +219,59 @@ type readerConn struct {
 
 func (c *readerConn) Read(p []byte) (int, error) { return c.r.Read(p) }
 
+var errHeaderLimit = errors.New("HTTP response headers exceed limit")
+
+type headerLimitReader struct {
+	r         io.Reader
+	remaining int
+	matched   int
+	done      bool
+}
+
+func (r *headerLimitReader) Read(data []byte) (int, error) {
+	if r.done {
+		return r.r.Read(data)
+	}
+	if r.remaining == 0 {
+		return 0, errHeaderLimit
+	}
+	if len(data) > r.remaining {
+		data = data[:r.remaining]
+	}
+	n, err := r.r.Read(data)
+	r.remaining -= n
+	terminator := [...]byte{'\r', '\n', '\r', '\n'}
+	for _, value := range data[:n] {
+		if value == terminator[r.matched] {
+			r.matched++
+			if r.matched == len(terminator) {
+				r.done = true
+				break
+			}
+		} else if value == terminator[0] {
+			r.matched = 1
+		} else {
+			r.matched = 0
+		}
+	}
+	return n, err
+}
+
 func ReadResponseLimited(conn net.Conn, req *http.Request, maxHeader int) (*http.Response, net.Conn, error) {
 	if maxHeader < 1 {
 		maxHeader = 64 << 10
 	}
-	source := bufio.NewReaderSize(conn, 4096)
-	header := make([]byte, 0, min(maxHeader, 4096))
-	for len(header) < maxHeader {
-		b, err := source.ReadByte()
-		if err != nil {
-			return nil, nil, err
-		}
-		header = append(header, b)
-		n := len(header)
-		if n >= 4 && bytes.Equal(header[n-4:], []byte("\r\n\r\n")) {
-			combined := bufio.NewReaderSize(io.MultiReader(bytes.NewReader(header), source), 4096)
-			resp, err := http.ReadResponse(combined, req)
-			if err != nil {
-				return nil, nil, err
-			}
-			return resp, &readerConn{Conn: conn, r: combined}, nil
-		}
+	limited := &headerLimitReader{r: conn, remaining: maxHeader}
+	source := bufio.NewReaderSize(limited, min(maxHeader, 4096))
+	resp, err := http.ReadResponse(source, req)
+	if err != nil {
+		return nil, nil, err
 	}
-	return nil, nil, errors.New("HTTP response headers exceed limit")
+	if !limited.done {
+		_ = resp.Body.Close()
+		return nil, nil, errors.New("HTTP response headers require CRLF line endings")
+	}
+	return resp, &readerConn{Conn: conn, r: source}, nil
 }
 
 func socks4Connect(conn net.Conn, proxy model.Proxy, dest policy.Destination, remote bool) error {

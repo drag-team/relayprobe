@@ -1,7 +1,6 @@
 package model
 
 import (
-	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
@@ -50,7 +49,7 @@ type Proxy struct {
 	Line        int
 }
 
-func (p Proxy) Address() string { return net.JoinHostPort(p.Host, fmt.Sprint(p.Port)) }
+func (p Proxy) Address() string { return net.JoinHostPort(p.Host, strconv.Itoa(int(p.Port))) }
 
 func (p Proxy) SafeURI() string {
 	auth := ""
@@ -99,62 +98,6 @@ func (p Proxy) EndpointIdentity() [12]byte {
 	h := sha256.Sum256(encoded)
 	var id [12]byte
 	copy(id[:], h[:12])
-	return id
-}
-
-func (p Proxy) DedupIdentity(key []byte) [16]byte {
-	credentialBytes := 0
-	if p.Credentials != nil {
-		credentialBytes = len(p.Credentials.Username) + len(p.Credentials.Password) + 2
-	}
-	if 64+len(p.Protocol)+len(p.Host)+credentialBytes+8 > 960 {
-		mac := hmac.New(sha256.New, key)
-		_, _ = mac.Write([]byte(strings.ToLower(string(p.Protocol)) + "\x00" + strings.ToLower(p.Host) + "\x00" + strconv.FormatUint(uint64(p.Port), 10)))
-		if p.Credentials != nil {
-			_, _ = mac.Write([]byte{'\x00'})
-			_, _ = mac.Write([]byte(p.Credentials.Username))
-			_, _ = mac.Write([]byte{'\x00'})
-			_, _ = mac.Write([]byte(p.Credentials.Password))
-		}
-		var id [16]byte
-		copy(id[:], mac.Sum(nil)[:16])
-		return id
-	}
-	var keyBlock [64]byte
-	if len(key) > len(keyBlock) {
-		digest := sha256.Sum256(key)
-		copy(keyBlock[:], digest[:])
-	} else {
-		copy(keyBlock[:], key)
-	}
-	var inner [960]byte
-	var outer [96]byte
-	for index := range keyBlock {
-		inner[index] = keyBlock[index] ^ 0x36
-		outer[index] = keyBlock[index] ^ 0x5c
-	}
-	n := len(keyBlock)
-	n += copyLowerASCII(inner[n:], string(p.Protocol))
-	inner[n] = 0
-	n++
-	n += copyLowerASCII(inner[n:], p.Host)
-	inner[n] = 0
-	n++
-	encoded := strconv.AppendUint(inner[:n], uint64(p.Port), 10)
-	n = len(encoded)
-	if p.Credentials != nil {
-		inner[n] = 0
-		n++
-		n += copy(inner[n:], p.Credentials.Username)
-		inner[n] = 0
-		n++
-		n += copy(inner[n:], p.Credentials.Password)
-	}
-	innerDigest := sha256.Sum256(inner[:n])
-	copy(outer[64:], innerDigest[:])
-	digest := sha256.Sum256(outer[:])
-	var id [16]byte
-	copy(id[:], digest[:16])
 	return id
 }
 
@@ -353,6 +296,7 @@ type RunConfiguration struct {
 	StopOnSuccess    bool     `json:"stop_on_success"`
 	RetryPermanent   bool     `json:"retry_permanent_failures"`
 	AllowRemoteDNS   bool     `json:"allow_remote_dns"`
+	MaxResponseBytes int64    `json:"max_response_bytes"`
 	MinResponseBytes int64    `json:"min_response_bytes,omitempty"`
 	MinThroughput    float64  `json:"min_throughput_kbps,omitempty"`
 	ContentRules     int      `json:"content_rules,omitempty"`

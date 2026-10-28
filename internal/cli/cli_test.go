@@ -344,7 +344,7 @@ func TestExplicitFalseBooleanOverridesEnvironmentAndProfile(t *testing.T) {
 func TestContentThroughputAndBaselineOptions(t *testing.T) {
 	o := checkOptions{
 		protocol: "https", format: "jsonl", inputFormat: "text", color: "never",
-		rate: -1, maxRedirects: -1, minResponseBytes: 32 << 10, minThroughput: 250,
+		rate: -1, maxRedirects: -1, maxResponseBytes: 2 << 20, minResponseBytes: 32 << 10, minThroughput: 250,
 		requireText: stringsFlag{"expected-json"}, rejectText: stringsFlag{"access denied"},
 		expectJSON: stringsFlag{"status=ok"},
 		baselineIP: "198.51.100.10",
@@ -353,7 +353,7 @@ func TestContentThroughputAndBaselineOptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if proto != model.ProtocolHTTPS || cfg.MinResponseBytes != 32<<10 || cfg.MinThroughputKBPS != 250 || len(cfg.RequireText) != 1 || len(cfg.RejectText) != 1 || len(cfg.ExpectJSON) != 1 || cfg.AnonymityBaseline != "198.51.100.10" {
+	if proto != model.ProtocolHTTPS || cfg.MaxResponseBytes != 2<<20 || cfg.MinResponseBytes != 32<<10 || cfg.MinThroughputKBPS != 250 || len(cfg.RequireText) != 1 || len(cfg.RejectText) != 1 || len(cfg.ExpectJSON) != 1 || cfg.AnonymityBaseline != "198.51.100.10" {
 		t.Fatalf("cfg=%+v proto=%s", cfg, proto)
 	}
 }

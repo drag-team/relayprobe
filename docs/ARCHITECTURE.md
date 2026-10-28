@@ -41,8 +41,9 @@ operator explicitly requests them; successful runs can also stop at the first
 success. This avoids predictable connection multiplication while preserving an
 exhaustive mode.
 
-Deduplication retains keyed 128-bit in-process identities so credential variants
-remain distinct without exposing a credential-derived public ID. Persisted IDs
+Deduplication retains process-local seeded 96-bit identities so credential variants
+remain distinct without exposing a credential-derived public ID or serializable
+credential verifier. Persisted IDs
 are 96-bit endpoint hashes over protocol, host, and port. JSONL output writes
 directly through a streaming encoder. These keep
 allocation and resident-memory growth low on large datasets; exact
@@ -102,6 +103,8 @@ Matrix scenarios repeat each named target and qualify target-local reliability
 before applying a quorum. Rotation intervals apply between rounds, not between
 destinations in one round. Direct preflight is independently bounded to four
 concurrent destinations and never inherits environment proxy settings.
+Attempt destinations are selected by index rather than materialized as a
+per-proxy slice, so matrix planning remains constant-space up to its safety cap.
 
 The local JSONL history remains optional. Cross-run analysis streams bounded
 records into endpoint trends; pool analysis deliberately loads only up to its

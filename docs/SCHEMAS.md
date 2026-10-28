@@ -59,6 +59,9 @@ The same summary object is written by `--summary-output` and by optional run
 history. A standalone summary may have an empty `run_id` because no historical
 JSONL run was created. Consumers should use `schema_version`, not the presence
 of a run identifier, to select a decoder.
+The embedded run configuration records both `max_response_bytes` and
+`min_response_bytes`, making response-memory and throughput conditions
+reproducible without consulting the original command line.
 
 When a quality policy is active, `quality` contains a boolean result and the
 actual/operator/expected tuple for every evaluated check. The same evidence is

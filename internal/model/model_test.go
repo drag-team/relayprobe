@@ -1,8 +1,6 @@
 package model
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"strings"
@@ -15,11 +13,6 @@ func TestCredentialIdentityAndSafeURI(t *testing.T) {
 	b.Credentials = &Credentials{Username: "u", Password: "two"}
 	if a.Key() != b.Key() {
 		t.Fatal("public endpoint identity must not depend on credentials")
-	}
-	var secret [32]byte
-	copy(secret[:], "test-only-deduplication-key")
-	if a.DedupIdentity(secret[:]) == b.DedupIdentity(secret[:]) {
-		t.Fatal("credential variants were not distinguished for in-process deduplication")
 	}
 	if strings.Contains(a.SafeURI(), "one") || strings.Contains(a.SafeURI(), "u") || !strings.Contains(a.SafeURI(), "***:***") {
 		t.Fatal("password exposed")
@@ -61,22 +54,5 @@ func TestBinaryIdentityMatchesPublicKey(t *testing.T) {
 	q.Credentials = &Credentials{Username: "u", Password: "different"}
 	if p.Identity() != q.Identity() {
 		t.Fatal("public identity leaked credential-dependent information")
-	}
-	var secret [32]byte
-	copy(secret[:], "test-only-deduplication-key")
-	if p.DedupIdentity(secret[:]) == q.DedupIdentity(secret[:]) {
-		t.Fatal("deduplication identity ignored credentials")
-	}
-}
-
-func TestDedupIdentityMatchesHMAC(t *testing.T) {
-	p := Proxy{Protocol: ProtocolHTTP, Host: "Proxy.Test", Port: 8080, Credentials: &Credentials{Username: "user", Password: "pass"}}
-	key := []byte("deduplication-key")
-	mac := hmac.New(sha256.New, key)
-	_, _ = mac.Write([]byte("http\x00proxy.test\x008080\x00user\x00pass"))
-	var expected [16]byte
-	copy(expected[:], mac.Sum(nil)[:16])
-	if actual := p.DedupIdentity(key); actual != expected {
-		t.Fatalf("actual=%x expected=%x", actual, expected)
 	}
 }

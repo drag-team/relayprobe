@@ -47,6 +47,28 @@ func TestParseRejectsAmbiguousCredentials(t *testing.T) {
 	}
 }
 
+func TestUnprefixedEndpointFastPath(t *testing.T) {
+	for _, test := range []struct {
+		raw  string
+		host string
+	}{
+		{"Proxy.Example.:3128", "proxy.example"},
+		{"192.0.2.10:8080", "192.0.2.10"},
+		{"[2001:db8::1]:1080", "2001:db8::1"},
+	} {
+		proxy, err := ParseProxy(test.raw, model.ProtocolSOCKS5)
+		if err != nil {
+			t.Fatalf("%q: %v", test.raw, err)
+		}
+		if proxy.Protocol != model.ProtocolSOCKS5 || proxy.Host != test.host {
+			t.Fatalf("%q: %+v", test.raw, proxy)
+		}
+	}
+	if _, err := ParseProxy("[fe80::1%25eth0]:1080", model.ProtocolSOCKS5); err == nil {
+		t.Fatal("accepted a scoped proxy address")
+	}
+}
+
 func TestRejectedCredentialIsRedacted(t *testing.T) {
 	got := redactRaw("user:verysecret@bad")
 	if strings.Contains(got, "verysecret") || !strings.Contains(got, "***") {
@@ -74,6 +96,21 @@ func TestStreamingTextDedupAndLimit(t *testing.T) {
 	q := New(Options{Format: FormatText, DefaultProtocol: model.ProtocolHTTP, MaxBytes: 3})
 	if err := q.Emit(strings.NewReader("host:80"), func(model.Proxy) error { return nil }, nil); err == nil {
 		t.Fatal("expected size error")
+	}
+}
+
+func TestDedupDistinguishesCredentialVariants(t *testing.T) {
+	p := New(Options{Format: FormatText, DefaultProtocol: model.ProtocolHTTP, Deduplicate: true})
+	var got []model.Proxy
+	input := "proxy.test:8080:user:one\nproxy.test:8080:user:two\nproxy.test:8080:user:one\n"
+	if err := p.Emit(strings.NewReader(input), func(proxy model.Proxy) error {
+		got = append(got, proxy)
+		return nil
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || p.Stats.Duplicates != 1 {
+		t.Fatalf("got=%d stats=%+v", len(got), p.Stats)
 	}
 }
 
@@ -256,6 +293,18 @@ func BenchmarkParserText(b *testing.B) {
 	b.SetBytes(int64(len(data)))
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
+		p := New(Options{Format: FormatText, DefaultProtocol: model.ProtocolHTTP, MaxBytes: int64(len(data) + 1), Deduplicate: true})
+		if err := p.Emit(bytes.NewReader(data), func(model.Proxy) error { return nil }, nil); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkParserTextNoDeduplicate(b *testing.B) {
+	data := benchmarkDataset(1000)
+	b.SetBytes(int64(len(data)))
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
 		p := New(Options{Format: FormatText, DefaultProtocol: model.ProtocolHTTP, MaxBytes: int64(len(data) + 1)})
 		if err := p.Emit(bytes.NewReader(data), func(model.Proxy) error { return nil }, nil); err != nil {
 			b.Fatal(err)
@@ -281,7 +330,7 @@ func BenchmarkParserGzip(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		p := New(Options{Format: FormatAuto, DefaultProtocol: model.ProtocolHTTP, MaxBytes: int64(len(data) + 1)})
+		p := New(Options{Format: FormatAuto, DefaultProtocol: model.ProtocolHTTP, MaxBytes: int64(len(data) + 1), Deduplicate: true})
 		if err := p.EmitSource(reader, FormatAuto, "proxies.txt.gz", func(model.Proxy) error { return nil }, nil); err != nil {
 			b.Fatal(err)
 		}

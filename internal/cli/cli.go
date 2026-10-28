@@ -146,7 +146,7 @@ type checkOptions struct {
 	dataDir                                                     string
 	maxRedirects                                                int
 	requireCount                                                int
-	minResponseBytes, maxInputBytes                             int64
+	minResponseBytes, maxResponseBytes, maxInputBytes           int64
 	rate, minSuccessRate, minThroughput                         float64
 	baselineIP, metadataFile, expectedBodySHA                   string
 	caBundle, proxyCABundle, scenarioPath, label                string
@@ -202,6 +202,7 @@ func (c CLI) addCheckFlags(fs *flag.FlagSet, o *checkOptions) {
 	fs.IntVar(&o.repeat, "repeat", 0, "measurements per proxy (1..20)")
 	fs.Int64Var(&o.maxInputBytes, "max-input-bytes", -1, "maximum aggregate decompressed input bytes")
 	fs.IntVar(&o.maxInputEntries, "max-input-entries", -1, "maximum aggregate input records")
+	fs.Int64Var(&o.maxResponseBytes, "max-response-bytes", -1, "maximum response body bytes per attempt")
 	fs.Float64Var(&o.minSuccessRate, "min-success-rate", -1, "minimum successful measurement ratio (0..1]")
 	fs.Int64Var(&o.minResponseBytes, "min-response-bytes", -1, "minimum response body size for a successful measurement")
 	fs.Float64Var(&o.minThroughput, "min-throughput-kbps", -1, "minimum measured response-body throughput in decimal KB/s")
@@ -302,6 +303,9 @@ func (c CLI) loadCheck(o checkOptions) (config.Config, model.Protocol, output.Fo
 	}
 	if o.maxInputEntries > 0 || o.explicit["max-input-entries"] {
 		cfg.MaxInputEntries = o.maxInputEntries
+	}
+	if o.maxResponseBytes > 0 || o.explicit["max-response-bytes"] {
+		cfg.MaxResponseBytes = o.maxResponseBytes
 	}
 	if o.minSuccessRate != -1 && o.minSuccessRate != 0 {
 		cfg.MinSuccessRate = o.minSuccessRate
@@ -778,7 +782,7 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 				if _, warned := warnedCredentialFiles[p.Source]; !warned {
 					warnedCredentialFiles[p.Source] = struct{}{}
 					if info, statErr := os.Stat(p.Source); statErr == nil && info.Mode().IsRegular() && info.Mode().Perm()&0077 != 0 {
-						fmt.Fprintf(c.Stderr, "security warning: credential input %s has mode %04o; use chmod 600\n", p.Source, info.Mode().Perm())
+						fmt.Fprintf(c.Stderr, "security warning: credential input %q has mode %04o; use chmod 600\n", p.Source, info.Mode().Perm())
 					}
 				}
 			}
@@ -793,7 +797,7 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 		}
 		reject := func(r inputpkg.Rejection) {
 			if o.verbose {
-				fmt.Fprintf(c.Stderr, "rejected %s:%d: %s (%s)\n", r.Source, r.Line, r.Value, r.Reason)
+				fmt.Fprintf(c.Stderr, "rejected %q:%d: %q (%s)\n", r.Source, r.Line, r.Value, r.Reason)
 			}
 		}
 		var e error
@@ -1029,14 +1033,14 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 			fmt.Fprintln(c.Stderr, "summary output error:", err)
 			return ExitOperational
 		}
-		fmt.Fprintf(c.Stderr, "saved run summary to %s\n", o.summaryOutput)
+		fmt.Fprintf(c.Stderr, "saved run summary to %q\n", o.summaryOutput)
 	}
 	if working != nil {
 		if err := working.Commit(); err != nil {
 			fmt.Fprintln(c.Stderr, "working output error:", err)
 			return ExitOperational
 		}
-		fmt.Fprintf(c.Stderr, "saved %d validated proxies to %s\n", summary.Successful, o.workingOutput)
+		fmt.Fprintf(c.Stderr, "saved %d validated proxies to %q\n", summary.Successful, o.workingOutput)
 	}
 	if junitOutput != nil {
 		payload, junitErr := qualitypkg.JUnit(summary)
@@ -1082,7 +1086,7 @@ func runConfiguration(cfg config.Config, proto model.Protocol, o checkOptions) m
 		Repeat: cfg.Repeat, MinSuccessRate: cfg.MinSuccessRate, ConnectTimeout: cfg.ConnectTimeout.String(), RequestTimeout: cfg.RequestTimeout.String(),
 		RetryBackoff: cfg.RetryBackoff.String(), StopOnSuccess: cfg.StopOnSuccess,
 		RetryPermanent: cfg.RetryPermanent, AllowRemoteDNS: cfg.AllowRemoteDNS,
-		MinResponseBytes: cfg.MinResponseBytes, MinThroughput: cfg.MinThroughputKBPS,
+		MaxResponseBytes: cfg.MaxResponseBytes, MinResponseBytes: cfg.MinResponseBytes, MinThroughput: cfg.MinThroughputKBPS,
 		ContentRules:    len(cfg.RequireText) + len(cfg.RejectText) + len(cfg.ExpectJSON),
 		MetadataEnabled: cfg.MetadataFile != "",
 		TargetMatrix:    cfg.TargetMatrix, TargetQuorum: cfg.TargetQuorum,
@@ -2089,7 +2093,7 @@ func (c CLI) completion(args []string) int {
 		return ExitUsage
 	}
 	commands := "check inspect import results runs export stats history pool shard merge explore config doctor bench completion version help"
-	checkFlags := "--profile --format --input-format --protocol --concurrency --queue-size --per-target --rate --repeat --max-input-bytes --max-input-entries --min-success-rate --min-response-bytes --min-throughput-kbps --require-text --reject-text --expect-json --expect-sha256 --baseline-ip --metadata-file --ca-bundle --proxy-ca-bundle --scenario --label --target-matrix --target-quorum --rotation-samples --rotation-interval --preflight --connect-timeout --request-timeout --dns-cache-ttl --retry-backoff --progress-interval --target --allow-host --allow-private-targets --allow-remote-dns --retry-permanent --stop-on-success --no-deduplicate --quiet --output-status --working-output --summary-output --checkpoint --resume --checkpoint-sync --policy --junit-output --force --save --data-dir --max-redirects --require-success --require-count --verbose --plain --color --config --help"
+	checkFlags := "--profile --format --input-format --protocol --concurrency --queue-size --per-target --rate --repeat --max-input-bytes --max-input-entries --max-response-bytes --min-success-rate --min-response-bytes --min-throughput-kbps --require-text --reject-text --expect-json --expect-sha256 --baseline-ip --metadata-file --ca-bundle --proxy-ca-bundle --scenario --label --target-matrix --target-quorum --rotation-samples --rotation-interval --preflight --connect-timeout --request-timeout --dns-cache-ttl --retry-backoff --progress-interval --target --allow-host --allow-private-targets --allow-remote-dns --retry-permanent --stop-on-success --no-deduplicate --quiet --output-status --working-output --summary-output --checkpoint --resume --checkpoint-sync --policy --junit-output --force --save --data-dir --max-redirects --require-success --require-count --verbose --plain --color --config --help"
 	switch args[0] {
 	case "bash":
 		fmt.Fprintf(c.Stdout, `_relayprobe() {

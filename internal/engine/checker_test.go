@@ -253,6 +253,21 @@ func TestRedirectToUnapprovedHostBlocked(t *testing.T) {
 	}
 }
 
+func TestRedirectWithoutLocationIsRejected(t *testing.T) {
+	c := baseChecker("http://target.test/")
+	c.Connector.DialContext = pipeDial(func(conn net.Conn) {
+		br := bufio.NewReader(conn)
+		_, _ = http.ReadRequest(br)
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n")
+		_, _ = http.ReadRequest(br)
+		_, _ = io.WriteString(conn, "HTTP/1.1 302 Found\r\nContent-Length: 0\r\n\r\n")
+	})
+	r := c.Check(context.Background(), model.Proxy{Protocol: model.ProtocolHTTP, Host: "proxy", Port: 80})
+	if observation := r.Observations[0]; observation.Status != model.StatusFailed || observation.Code != "invalid_redirect" {
+		t.Fatalf("%+v", observation)
+	}
+}
+
 func TestConnectTimeoutClassification(t *testing.T) {
 	c := baseChecker("http://target.test/")
 	c.Config.RequestTimeout = 30 * time.Millisecond
