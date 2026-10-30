@@ -24,7 +24,7 @@ jobs:
         go: ["1.24.x", stable]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go }}
           cache: false
@@ -55,7 +55,7 @@ jobs:
             runner: windows-2025
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.24.x"
           cache: false
@@ -103,7 +103,7 @@ jobs:
             goarch: ppc64
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.24.x"
           cache: false
