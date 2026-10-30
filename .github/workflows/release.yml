@@ -37,7 +37,31 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [amd64, arm64]
+        include:
+          - os: linux
+            arch: amd64
+            format: tar.gz
+          - os: linux
+            arch: arm64
+            format: tar.gz
+          - os: darwin
+            arch: amd64
+            format: tar.gz
+          - os: darwin
+            arch: arm64
+            format: tar.gz
+          - os: windows
+            arch: amd64
+            format: zip
+          - os: windows
+            arch: arm64
+            format: zip
+          - os: freebsd
+            arch: amd64
+            format: tar.gz
+          - os: freebsd
+            arch: arm64
+            format: tar.gz
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -47,22 +71,32 @@ jobs:
       - name: Build archive
         env:
           ARCH: ${{ matrix.arch }}
+          OS: ${{ matrix.os }}
+          FORMAT: ${{ matrix.format }}
           VERSION: ${{ github.ref_name }}
           COMMIT: ${{ github.sha }}
         run: |
           version="${VERSION#v}"
-          package="relayprobe-${VERSION}-linux-${ARCH}"
+          package="relayprobe-${VERSION}-${OS}-${ARCH}"
+          binary="relayprobe"
+          if test "${OS}" = windows; then binary="relayprobe.exe"; fi
           mkdir -p "dist/${package}"
-          CGO_ENABLED=0 GOOS=linux GOARCH="${ARCH}" go build -trimpath -ldflags "-s -w -X github.com/drag-team/relayprobe/internal/buildinfo.Version=${version} -X github.com/drag-team/relayprobe/internal/buildinfo.Commit=${COMMIT} -X github.com/drag-team/relayprobe/internal/buildinfo.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "dist/${package}/relayprobe" ./cmd/relayprobe
+          CGO_ENABLED=0 GOOS="${OS}" GOARCH="${ARCH}" go build -trimpath -ldflags "-s -w -X github.com/drag-team/relayprobe/internal/buildinfo.Version=${version} -X github.com/drag-team/relayprobe/internal/buildinfo.Commit=${COMMIT} -X github.com/drag-team/relayprobe/internal/buildinfo.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "dist/${package}/${binary}" ./cmd/relayprobe
           cp README.md LICENSE CHANGELOG.md "dist/${package}/"
-          tar -C dist -czf "dist/${package}.tar.gz" "${package}"
-          cd dist
-          sha256sum "${package}.tar.gz" > "${package}.tar.gz.sha256"
+          if test "${FORMAT}" = zip; then
+            cd dist
+            python3 -m zipfile -c "${package}.zip" "${package}"
+          else
+            tar -C dist -czf "dist/${package}.tar.gz" "${package}"
+            cd dist
+          fi
+          sha256sum "${package}.${FORMAT}" > "${package}.${FORMAT}.sha256"
       - uses: actions/upload-artifact@v4
         with:
-          name: relayprobe-linux-${{ matrix.arch }}
+          name: relayprobe-${{ matrix.os }}-${{ matrix.arch }}
           path: |
             dist/*.tar.gz
+            dist/*.zip
             dist/*.sha256
           if-no-files-found: error
   publish:

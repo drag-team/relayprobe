@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,17 @@ func run(args []string, in string) (int, string, string) {
 	c := CLI{Stdout: &out, Stderr: &err, Stdin: strings.NewReader(in)}
 	code := c.Run(args)
 	return code, out.String(), err.String()
+}
+
+func assertPrivateMode(t *testing.T, path string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("mode=%v err=%v", info, err)
+	}
 }
 func TestImportAndRedaction(t *testing.T) {
 	code, out, diag := run([]string{"import"}, "http://user:secret@host:80\nbad\n")
@@ -89,9 +101,7 @@ func TestShardDistributesNormalizedCredentials(t *testing.T) {
 			t.Fatal(err)
 		}
 		combined += string(data)
-		if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0600 {
-			t.Fatalf("mode=%v err=%v", info, err)
-		}
+		assertPrivateMode(t, path)
 	}
 	if !strings.Contains(combined, "http://user:pass@1.2.3.4:80") || !strings.Contains(combined, "http://proxy.test:8080") {
 		t.Fatalf("combined=%q", combined)
@@ -185,9 +195,7 @@ func TestConfigInitDoesNotOverwrite(t *testing.T) {
 	if code, out, diag := run([]string{"config", "init", "--config", p}, ""); code != ExitOK || out != p+"\n" {
 		t.Fatalf("%d out=%q diag=%s", code, out, diag)
 	}
-	if info, err := os.Stat(p); err != nil || info.Mode().Perm() != 0600 {
-		t.Fatalf("mode=%v err=%v", info, err)
-	}
+	assertPrivateMode(t, p)
 	if code, _, _ := run([]string{"config", "init", "--config", p}, ""); code != ExitOperational {
 		t.Fatalf("overwrite code=%d", code)
 	}
@@ -283,6 +291,9 @@ func TestSavedRunAggregatesSanitizedTargetHealth(t *testing.T) {
 }
 
 func TestCredentialInputPermissionWarning(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows file permissions are represented by ACLs")
+	}
 	path := filepath.Join(t.TempDir(), "credentials.txt")
 	if err := os.WriteFile(path, []byte("http://user:secret@proxy.test:8080\n"), 0644); err != nil {
 		t.Fatal(err)
@@ -377,10 +388,7 @@ func TestSecureWorkingOutput(t *testing.T) {
 	if string(b) != "http://user:secret@host:80\n" {
 		t.Fatalf("%q", b)
 	}
-	info, _ := os.Stat(path)
-	if info.Mode().Perm() != 0600 {
-		t.Fatalf("mode=%o", info.Mode().Perm())
-	}
+	assertPrivateMode(t, path)
 	if _, err = openSecureOutput(path, false); err == nil {
 		t.Fatal("existing file overwritten")
 	}
@@ -448,9 +456,7 @@ func TestSummaryOutputRequireCountAndAtomicPreservation(t *testing.T) {
 	if summary.Processed != 1 || summary.Successful != 0 || summary.StatusCount[model.StatusPolicyBlock] != 1 {
 		t.Fatalf("summary=%+v", summary)
 	}
-	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0600 {
-		t.Fatalf("mode=%v err=%v", info, err)
-	}
+	assertPrivateMode(t, path)
 	if code, _, _ := run(args, "proxy.test:8080\n"); code != ExitOperational {
 		t.Fatalf("existing summary code=%d", code)
 	}
@@ -492,6 +498,9 @@ func TestGzipImportAndCanonicalPaths(t *testing.T) {
 	aliasRoot := t.TempDir()
 	alias := filepath.Join(aliasRoot, "data")
 	if err := os.Symlink(dir, alias); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skip("symbolic links require an elevated Windows privilege")
+		}
 		t.Fatal(err)
 	}
 	plain := filepath.Join(dir, "plain.txt")

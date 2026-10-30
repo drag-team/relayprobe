@@ -25,6 +25,7 @@ import (
 	"github.com/drag-team/relayprobe/internal/buildinfo"
 	"github.com/drag-team/relayprobe/internal/config"
 	"github.com/drag-team/relayprobe/internal/engine"
+	"github.com/drag-team/relayprobe/internal/fsx"
 	historypkg "github.com/drag-team/relayprobe/internal/history"
 	inputpkg "github.com/drag-team/relayprobe/internal/input"
 	metadatapkg "github.com/drag-team/relayprobe/internal/metadata"
@@ -566,7 +567,7 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 			fmt.Fprintf(c.Stderr, "loaded %d metadata prefixes\n", metadataProvider.Records())
 		}
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), interruptSignals()...)
 	defer stop()
 	checker := engine.NewChecker(cfg)
 	checker.Metadata = metadataProvider
@@ -1243,7 +1244,7 @@ func (s *secureOutput) Commit() error {
 		return err
 	}
 	if s.force {
-		if err := os.Rename(s.temp, s.final); err != nil {
+		if err := fsx.Replace(s.temp, s.final); err != nil {
 			_ = os.Remove(s.temp)
 			return err
 		}
@@ -1256,12 +1257,7 @@ func (s *secureOutput) Commit() error {
 			return err
 		}
 	}
-	d, err := os.Open(filepath.Dir(s.final))
-	if err != nil {
-		return err
-	}
-	defer d.Close()
-	return d.Sync()
+	return fsx.SyncParent(s.final)
 }
 
 func (s *secureOutput) Abort() {
@@ -1281,7 +1277,7 @@ func samePath(a, b string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return aa == bb, nil
+	return fsx.SameCanonicalPath(aa, bb), nil
 }
 
 func canonicalPath(path string) (string, error) {
@@ -1670,9 +1666,8 @@ func recommendedConcurrency() int {
 	if recommended < 32 {
 		recommended = 32
 	}
-	var limit syscall.Rlimit
-	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &limit); err == nil {
-		fileBound := int(limit.Cur/4) - 32
+	if soft, _, available := fileDescriptorLimit(); available {
+		fileBound := int(min(soft/4, 1<<30)) - 32
 		if fileBound > 0 && recommended > fileBound {
 			recommended = fileBound
 		}
@@ -2018,14 +2013,13 @@ func (c CLI) doctor(args []string) int {
 	cfg, err := config.Load(*configPath)
 	ok := true
 	fmt.Fprintf(c.Stdout, "runtime        OK  %s %s/%s\n", runtime.Version(), runtime.GOOS, runtime.GOARCH)
-	var rlim syscall.Rlimit
-	if e := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &rlim); e == nil {
-		fmt.Fprintf(c.Stdout, "resources      OK  cpus=%d nofile_soft=%d nofile_hard=%d\n", runtime.NumCPU(), rlim.Cur, rlim.Max)
-		if err == nil && rlim.Cur < uint64(cfg.Concurrency+64) {
-			fmt.Fprintf(c.Stdout, "concurrency    WARN nofile_soft=%d may constrain concurrency=%d\n", rlim.Cur, cfg.Concurrency)
+	if soft, hard, available := fileDescriptorLimit(); available {
+		fmt.Fprintf(c.Stdout, "resources      OK  cpus=%d nofile_soft=%d nofile_hard=%d\n", runtime.NumCPU(), soft, hard)
+		if err == nil && soft < uint64(cfg.Concurrency+64) {
+			fmt.Fprintf(c.Stdout, "concurrency    WARN nofile_soft=%d may constrain concurrency=%d\n", soft, cfg.Concurrency)
 		}
 	} else {
-		fmt.Fprintln(c.Stdout, "resources      WARN", e)
+		fmt.Fprintf(c.Stdout, "resources      OK  cpus=%d nofile=unavailable\n", runtime.NumCPU())
 	}
 	var checker *engine.Checker
 	if err != nil {

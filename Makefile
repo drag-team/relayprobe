@@ -6,7 +6,7 @@ BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 MODULE := github.com/drag-team/relayprobe
 LDFLAGS := -s -w -X $(MODULE)/internal/buildinfo.Version=$(VERSION) -X $(MODULE)/internal/buildinfo.Commit=$(COMMIT) -X $(MODULE)/internal/buildinfo.Date=$(BUILD_DATE)
 
-.PHONY: all build check clean fmt fmt-check install race release-check test uninstall version vet
+.PHONY: all build check clean cross-check fmt fmt-check install race release-check test uninstall version vet
 
 all: check build
 
@@ -15,6 +15,14 @@ build:
 	CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o $(BINARY) ./cmd/relayprobe
 
 check: fmt-check vet test race
+
+cross-check:
+	@set -eu; tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
+	for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64 freebsd/amd64 freebsd/arm64 openbsd/amd64 netbsd/amd64 dragonfly/amd64 illumos/amd64 solaris/amd64 aix/ppc64; do \
+		os="$${target%/*}"; arch="$${target#*/}"; suffix=""; test "$$os" != windows || suffix=.exe; \
+		printf 'building %s\n' "$$target"; \
+		CGO_ENABLED=0 GOOS="$$os" GOARCH="$$arch" go build -trimpath -o "$$tmp/relayprobe-$$os-$$arch$$suffix" ./cmd/relayprobe; \
+	done
 
 fmt:
 	gofmt -w cmd internal

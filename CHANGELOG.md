@@ -39,6 +39,10 @@ All notable changes to RelayProbe are documented in this file. The project uses
 - Score, throughput, country, ASN, and network-type result/export filters.
 - Explicit `-` standard-input sources for check and import pipelines.
 - Canonical version file, documented release locations, and hardened release validation.
+- Native Linux ARM64, macOS ARM64, and Windows x64 CI plus multiplatform release archives.
+- Windows-native exclusive checkpoint locks and atomic file replacement.
+- A bounded, sequential `make cross-check` portability gate for fourteen
+  OS/architecture targets.
 
 ### Changed
 
@@ -63,6 +67,10 @@ All notable changes to RelayProbe are documented in this file. The project uses
 - CSV exports include exit, anonymity, transfer, and metadata fields.
 - Failed response assertions retain protocol timing and body evidence.
 - File exports now use synchronized atomic replacement.
+- Platform-specific signal, descriptor-limit, directory-sync, and path
+  comparison behavior replaces Unix-only assumptions.
+- Observation storage preallocates only the common bounded attempt window,
+  reducing repeat-test growth without reserving full large matrices.
 
 ### Security
 

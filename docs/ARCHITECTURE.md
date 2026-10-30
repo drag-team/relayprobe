@@ -23,8 +23,13 @@ text / CSV / JSON / gzip / scenario
 
 Packages are divided by responsibility: `input`, `config`, `scenario`, `policy`,
 `protocol`, `engine`, `intel`, `metadata`, `score`, `metrics`, `history`,
-`quality`, `output`, `store`, and `cli`.
+`quality`, `output`, `store`, `fsx`, and `cli`.
 Interactive and non-interactive commands use the same engine and models.
+
+OS-specific code is restricted to small build-tagged boundaries: process
+signals and descriptor limits, checkpoint locking and no-follow opening, path
+identity, atomic replacement, and directory synchronization. Network protocol
+logic and result semantics are shared across every supported platform.
 
 The global worker count, configurable job/result queues, and per-target semaphores are all
 bounded. Each worker checks repeats serially for one proxy, limiting connection

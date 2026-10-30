@@ -30,14 +30,15 @@ daemon, telemetry, or root requirement.
 - JSONL, CSV, TXT, and human-readable output with clean stdout/stderr separation.
 - Atomic credential-bearing working lists and optional local run history.
 - TTY-aware color, plain output, shell completion, signal handling, and stable exit codes.
-- Single static Go binary with no runtime dependencies.
+- Single static Go binary with no runtime dependencies on Linux, macOS, Windows, and FreeBSD.
 
 ## Install
 
 RelayProbe requires Go 1.24 or newer when building from source.
 
-Stable Linux amd64 and arm64 archives and their SHA-256 files are published on
-the [GitHub Releases page](https://github.com/drag-team/relayprobe/releases).
+Stable Linux, macOS, Windows, and FreeBSD amd64/arm64 archives and their
+SHA-256 files are published on the
+[GitHub Releases page](https://github.com/drag-team/relayprobe/releases).
 Source development on `main` may be newer than the latest release. See
 [versioning and releases](docs/VERSIONING.md) for the exact policy and use
 `relayprobe version` to identify any installed executable.
@@ -54,6 +55,22 @@ relayprobe version
 with `make install PREFIX=/custom/prefix`. A system-wide installation is not
 required.
 
+On macOS and FreeBSD, the source workflow is the same. On Windows, download the
+ZIP release or build `relayprobe.exe` with `go build -trimpath ./cmd/relayprobe`.
+PowerShell, Command Prompt, and non-interactive pipelines can invoke the same
+CLI; shell completion generation remains intended for Bash, Zsh, and Fish.
+
+Support is continuously exercised as follows:
+
+| Platform | Native CI | Release artifacts |
+|---|---:|---:|
+| Ubuntu x64 and ARM64 | Yes | Yes |
+| macOS ARM64 | Yes | Yes, x64 and ARM64 |
+| Windows x64 | Yes | Yes, x64 and ARM64 |
+| FreeBSD | Cross-compiled | Yes, x64 and ARM64 |
+| OpenBSD and NetBSD | Cross-compiled | Source build |
+| DragonFly BSD, illumos, Solaris, and AIX | Cross-compiled | Source build |
+
 To build without installing:
 
 ```sh
@@ -64,7 +81,7 @@ make build
 ## Quick start
 
 Validate HTTP proxies from `proxies.txt` and atomically save the working entries,
-including their credentials, to a mode-0600 `a.txt` file:
+including their credentials, to a private `a.txt` file (mode 0600 on POSIX):
 
 ```sh
 relayprobe check --protocol http --profile fast --allow-remote-dns --quiet --working-output a.txt --force proxies.txt
@@ -316,10 +333,11 @@ unless the deliberate `--allow-private-targets` exception is used.
 
 ## Persistence and exports
 
-`--save` stores mode-0600 JSONL runs under `~/.config/relayprobe/runs`. Results
-are flushed, synchronized, and atomically renamed. Passwords and sensitive
-target URL components are never persisted. Retention cleanup is preview-only
-until `runs prune --execute` is supplied.
+`--save` stores private JSONL runs under the platform configuration directory
+(`~/.config/relayprobe/runs` on typical Linux systems). POSIX files use mode
+0600. Results are flushed, synchronized, and atomically renamed. Passwords and
+sensitive target URL components are never persisted. Retention cleanup is
+preview-only until `runs prune --execute` is supplied.
 
 `--summary-output PATH` writes the final schema-versioned run summary as
 indented JSON without enabling history. The file is mode 0600, synchronized,
@@ -400,9 +418,11 @@ RelayProbe validates only explicitly supplied, authorized proxy endpoints. It
 does not discover public proxies, scan networks, evade controls, or bypass rate
 limits. SOCKS4 supports IPv4 destinations; SOCKS4a remote resolution is opt-in.
 History is a local single-user JSONL store rather than a multi-user database.
-Native MMDB and end-to-end HTTP/2 proxy requests are not currently implemented;
-metadata uses the documented offline CSV/gzip format and validation requests use
-HTTP/1.1 after protocol negotiation. Direct preflight may negotiate HTTP/2.
+Windows output files inherit the destination directory ACL; RelayProbe does not
+rewrite Windows ACLs. Native MMDB and end-to-end HTTP/2 proxy requests are not
+currently implemented; metadata uses the documented offline CSV/gzip format
+and validation requests use HTTP/1.1 after protocol negotiation. Direct
+preflight may negotiate HTTP/2.
 Real network throughput depends primarily on proxy latency, target behavior,
 timeouts, file descriptor limits, and local network conditions.
 

@@ -1,8 +1,9 @@
 # Release process
 
 RelayProbe releases are created from annotated Semantic Versioning tags on a
-clean `main` branch. The release workflow builds static Linux amd64 and arm64
-archives, generates SHA-256 checksum files, and publishes them to GitHub.
+clean `main` branch. The release workflow builds static Linux, macOS, Windows,
+and FreeBSD amd64/arm64 archives, generates SHA-256 checksum files, and
+publishes them to GitHub.
 `VERSION`, the changelog section, and the tag must agree exactly.
 
 ## Prepare
@@ -43,7 +44,8 @@ unverified working tree.
 
 ## Verify
 
-Download each archive and its checksum onto a clean Linux host:
+Download each archive and its checksum onto a matching clean host. For example,
+on Linux:
 
 ```sh
 version="0.7.0"
@@ -53,9 +55,10 @@ tar -xzf "relayprobe-v${version}-linux-amd64.tar.gz"
 ./"relayprobe-v${version}-linux-amd64"/relayprobe doctor
 ```
 
-Confirm the embedded version, commit, target architecture, license, README, and
-changelog. Verify both architectures when suitable hardware or emulation is
-available.
+Confirm the embedded version, commit, target OS and architecture, license,
+README, and changelog. Verify every native architecture available to the
+maintainer; CI provides native Linux ARM64, macOS ARM64, and Windows x64 coverage
+and compile coverage for the remaining release targets.
 
 ## Recovery
 

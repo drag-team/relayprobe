@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/drag-team/relayprobe/internal/fsx"
 	"github.com/drag-team/relayprobe/internal/model"
 )
 
@@ -137,15 +138,7 @@ func (r *RunWriter) Commit(summary model.RunSummary) error {
 		return err
 	}
 	metaPublished = true
-	d, err := os.Open(r.dir)
-	if err != nil {
-		return err
-	}
-	if err := d.Sync(); err != nil {
-		_ = d.Close()
-		return err
-	}
-	if err := d.Close(); err != nil {
+	if err := fsx.SyncDir(r.dir); err != nil {
 		return err
 	}
 	committed = true
@@ -327,12 +320,7 @@ func PruneRuns(dataDir string, keep int, execute bool) ([]string, error) {
 			}
 		}
 	}
-	d, err := os.Open(dir)
-	if err != nil {
-		return nil, err
-	}
-	defer d.Close()
-	if err := d.Sync(); err != nil {
+	if err := fsx.SyncDir(dir); err != nil {
 		return nil, err
 	}
 	return candidates, nil

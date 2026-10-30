@@ -3,6 +3,7 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/drag-team/relayprobe/internal/model"
@@ -47,19 +48,21 @@ func TestCheckpointResumeAndPartialRecovery(t *testing.T) {
 
 func TestCheckpointRejectsUnsafeExistingFiles(t *testing.T) {
 	dir := t.TempDir()
-	permissive := filepath.Join(dir, "permissive.jsonl")
-	if err := os.WriteFile(permissive, []byte("partial"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(permissive, 0644); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := OpenCheckpoint(permissive, true, false, 1, 10); err == nil {
-		t.Fatal("permissive checkpoint accepted")
-	}
-	contents, err := os.ReadFile(permissive)
-	if err != nil || string(contents) != "partial" {
-		t.Fatalf("unsafe file was modified: %q %v", contents, err)
+	if runtime.GOOS != "windows" {
+		permissive := filepath.Join(dir, "permissive.jsonl")
+		if err := os.WriteFile(permissive, []byte("partial"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(permissive, 0644); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := OpenCheckpoint(permissive, true, false, 1, 10); err == nil {
+			t.Fatal("permissive checkpoint accepted")
+		}
+		contents, err := os.ReadFile(permissive)
+		if err != nil || string(contents) != "partial" {
+			t.Fatalf("unsafe file was modified: %q %v", contents, err)
+		}
 	}
 	target := filepath.Join(dir, "target.jsonl")
 	if err := os.WriteFile(target, nil, 0600); err != nil {
@@ -67,6 +70,9 @@ func TestCheckpointRejectsUnsafeExistingFiles(t *testing.T) {
 	}
 	link := filepath.Join(dir, "link.jsonl")
 	if err := os.Symlink(target, link); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skip("symbolic links require an elevated Windows privilege")
+		}
 		t.Fatal(err)
 	}
 	if _, _, err := OpenCheckpoint(link, true, false, 1, 10); err == nil {

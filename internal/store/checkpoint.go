@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"strings"
-	"syscall"
 	"unicode"
 )
 
@@ -29,7 +28,7 @@ func OpenCheckpoint(path string, resume, force bool, syncEvery int, maxResults i
 		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 			return nil, nil, errors.New("checkpoint must be a regular file, not a symbolic link")
 		}
-		if info.Mode().Perm()&0077 != 0 {
+		if !checkpointPrivate(info) {
 			return nil, nil, errors.New("checkpoint must not be readable by group or other users")
 		}
 	} else if !errors.Is(statErr, os.ErrNotExist) {
@@ -47,9 +46,9 @@ func OpenCheckpoint(path string, resume, force bool, syncEvery int, maxResults i
 	if err != nil {
 		return nil, nil, fmt.Errorf("open checkpoint: %w", err)
 	}
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := lockCheckpoint(file); err != nil {
 		_ = file.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+		if errors.Is(err, errCheckpointLocked) {
 			return nil, nil, errors.New("checkpoint is already open by another process")
 		}
 		return nil, nil, fmt.Errorf("lock checkpoint: %w", err)
@@ -57,7 +56,7 @@ func OpenCheckpoint(path string, resume, force bool, syncEvery int, maxResults i
 	if info, statErr := file.Stat(); statErr != nil {
 		_ = file.Close()
 		return nil, nil, statErr
-	} else if info.Mode().Perm()&0077 != 0 {
+	} else if !checkpointPrivate(info) {
 		_ = file.Close()
 		return nil, nil, errors.New("checkpoint must not be readable by group or other users")
 	}
@@ -212,10 +211,4 @@ func truncatePartialFile(file *os.File) error {
 	return file.Truncate(0)
 }
 
-func openNoFollow(path string, flags int, mode os.FileMode) (*os.File, error) {
-	fd, err := syscall.Open(path, flags|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, uint32(mode.Perm()))
-	if err != nil {
-		return nil, err
-	}
-	return os.NewFile(uintptr(fd), path), nil
-}
+var errCheckpointLocked = errors.New("checkpoint locked")

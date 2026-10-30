@@ -184,6 +184,9 @@ func (c *Checker) Check(ctx context.Context, p model.Proxy) model.Result {
 			break
 		}
 		obs := c.attempt(ctx, p, target, i+1)
+		if r.Observations == nil {
+			r.Observations = make([]model.Observation, 0, min(attemptCount, 8))
+		}
 		r.Observations = append(r.Observations, obs)
 		r.Attempts++
 		if obs.Status == model.StatusOK {

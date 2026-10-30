@@ -26,8 +26,8 @@ Default safeguards:
 - target paths, fragments, and queries removed from persisted observations unless
   replaced by an explicit control-character-free scenario target name;
 - forwarding evidence stores names but not potentially identifying header values;
-- history, checkpoints, sharded credential lists, reports, and generated configuration use owner-only permissions;
-- standalone summaries and credential-bearing exports use atomic owner-only files;
+- history, checkpoints, sharded credential lists, reports, and generated configuration use owner-only POSIX permissions;
+- standalone summaries and credential-bearing exports use atomic owner-only POSIX files;
 - generated configuration is synchronized and atomically replaced;
 - input/output path aliases are compared after symbolic-link resolution;
 - no shell evaluation, dynamic code loading, privileged operation, or service
@@ -59,6 +59,13 @@ Shard outputs also contain full credentials and use mode 0600. Resume
 checkpoints are redacted; because their stable ID is credential-free, alternate
 credentials for the same protocol/host/port share resume identity. Do not reuse
 one checkpoint when comparing credential variants.
+
+On Windows, generated files inherit the ACL of their containing directory.
+RelayProbe uses native exclusive checkpoint locks, rejects reparse-point-like
+symbolic links exposed by Go, verifies file identity after opening, and uses
+atomic replace semantics, but it deliberately does not rewrite organization- or
+administrator-managed ACLs. Store credential inputs and outputs in a directory
+whose ACL grants access only to the intended account.
 
 Custom CA bundles extend, rather than replace, the system trust store. RelayProbe
 does not expose an insecure TLS mode. Certificate files are bounded before

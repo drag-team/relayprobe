@@ -10,7 +10,7 @@ development versions use `X.Y.Z-dev` on the default branch.
 | [`VERSION`](../VERSION) | Version used by local Makefile builds |
 | [`CHANGELOG.md`](../CHANGELOG.md) | Human-readable changes in each version |
 | Git tag `vX.Y.Z` | Immutable source revision for a published version |
-| [GitHub Releases](https://github.com/drag-team/relayprobe/releases) | Linux archives, checksums, and release notes |
+| [GitHub Releases](https://github.com/drag-team/relayprobe/releases) | Platform archives, checksums, and release notes |
 | `relayprobe version` | Version, commit, build time, Go version, OS, and architecture of an executable |
 
 The repository does not commit generated binaries. Development work stays in
@@ -25,9 +25,12 @@ Schema changes increment `schema_version`, and readers should tolerate unknown
 fields. Patch releases contain compatible fixes. Published tags are never moved
 or silently replaced.
 
-Release archives are currently produced for static Linux amd64 and arm64
-executables. Each archive has an adjacent SHA-256 file. Source archives are
-provided automatically by GitHub.
+Release archives are produced for static Linux, macOS, Windows, and FreeBSD
+amd64 and arm64 executables. Windows uses ZIP; the other platforms use tar.gz.
+Each archive has an adjacent SHA-256 file. Source archives are provided
+automatically by GitHub. Native CI executes Linux amd64/arm64, macOS arm64, and
+Windows amd64; FreeBSD and the remaining release architectures are verified by
+cross-compiling the application and its test packages.
 
 The complete maintainer procedure is documented in
 [RELEASING.md](RELEASING.md).

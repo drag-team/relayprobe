@@ -1,6 +1,6 @@
 # Project status
 
-Last verified: 2026-10-28
+Last verified: 2026-10-30
 
 ## Objective and architecture
 
@@ -30,7 +30,12 @@ It is not represented as a completed independent security audit.
 - Streaming output, secure atomic exports, resumable checkpoints, deterministic
   sharding, bounded merging, quality gates, JUnit reports, filtering, summaries,
   completion, interactive exploration, diagnostics, and controlled benchmarks.
-- Linux amd64 and arm64 static cross-builds.
+- Native Linux amd64/arm64, macOS arm64, and Windows amd64 CI, with static
+  release builds for Linux, macOS, Windows, and FreeBSD amd64/arm64.
+- Cross-build coverage for OpenBSD, NetBSD, DragonFly BSD, illumos, Solaris,
+  and AIX; platform-specific signal and descriptor handling; Windows
+  checkpoint locking, case-insensitive path collision checks, and atomic
+  Windows replacement.
 
 ## Verification record
 
@@ -64,14 +69,17 @@ unauthorized external proxy infrastructure.
   a native MMDB dependency could not be acquired in the restricted build environment.
 - Validation requests use HTTP/1.1 after custom proxy negotiation. Direct
   preflight can negotiate HTTP/2, but end-to-end HTTP/2 proxy validation remains under evaluation.
-- Signed releases, SBOMs, Ubuntu matrix validation, and expanded response
-  parsing fuzz targets remain on the roadmap.
+- Windows files inherit directory ACLs; RelayProbe does not attempt to replace
+  administrator-managed ACL policy with POSIX permission semantics.
+- Signed releases, SBOMs, and expanded response parsing fuzz targets remain on
+  the roadmap.
 
 ## Resume commands
 
 ```sh
 git status --short
 make check
+make cross-check
 go test ./internal/input -run '^$' -fuzz '^FuzzParseProxy$' -fuzztime=10s
 make build
 ./bin/relayprobe version
