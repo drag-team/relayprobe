@@ -4,7 +4,7 @@ import (
 	"math"
 	"sort"
 
-	"github.com/drag-team/relayprobe/internal/model"
+	"github.com/drag-team/netvex/internal/model"
 )
 
 func Calculate(obs []model.Observation) model.Score {

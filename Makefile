@@ -1,18 +1,18 @@
-BINARY := bin/relayprobe
+BINARY := bin/netvex
 PREFIX ?= $(HOME)/.local
 VERSION ?= $(shell tr -d '\n' < VERSION)
 COMMIT ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || printf unknown)
-BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
-MODULE := github.com/drag-team/relayprobe
+BUILD_DATE ?= $(shell git show -s --format=%cI HEAD 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)
+MODULE := github.com/drag-team/netvex
 LDFLAGS := -s -w -X $(MODULE)/internal/buildinfo.Version=$(VERSION) -X $(MODULE)/internal/buildinfo.Commit=$(COMMIT) -X $(MODULE)/internal/buildinfo.Date=$(BUILD_DATE)
 
-.PHONY: all build check clean cross-check fmt fmt-check install race release-check test uninstall version vet
+.PHONY: all build check clean cross-check fmt fmt-check install race release-check reproducibility-check test uninstall version vet
 
 all: check build
 
 build:
 	mkdir -p bin
-	CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o $(BINARY) ./cmd/relayprobe
+	CGO_ENABLED=0 go build -mod=readonly -trimpath -buildvcs=false -ldflags '$(LDFLAGS)' -o $(BINARY) ./cmd/netvex
 
 check: fmt-check vet test race
 
@@ -21,8 +21,15 @@ cross-check:
 	for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64 freebsd/amd64 freebsd/arm64 openbsd/amd64 netbsd/amd64 dragonfly/amd64 illumos/amd64 solaris/amd64 aix/ppc64; do \
 		os="$${target%/*}"; arch="$${target#*/}"; suffix=""; test "$$os" != windows || suffix=.exe; \
 		printf 'building %s\n' "$$target"; \
-		CGO_ENABLED=0 GOOS="$$os" GOARCH="$$arch" go build -trimpath -o "$$tmp/relayprobe-$$os-$$arch$$suffix" ./cmd/relayprobe; \
+		CGO_ENABLED=0 GOOS="$$os" GOARCH="$$arch" go build -mod=readonly -trimpath -buildvcs=false -o "$$tmp/netvex-$$os-$$arch$$suffix" ./cmd/netvex; \
 	done
+
+reproducibility-check:
+	@set -eu; tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
+	CGO_ENABLED=0 go build -mod=readonly -trimpath -buildvcs=false -ldflags '$(LDFLAGS)' -o "$$tmp/first" ./cmd/netvex; \
+	CGO_ENABLED=0 go build -mod=readonly -trimpath -buildvcs=false -ldflags '$(LDFLAGS)' -o "$$tmp/second" ./cmd/netvex; \
+	cmp "$$tmp/first" "$$tmp/second"; \
+	printf 'reproducible binary %s\n' "$$(sha256sum "$$tmp/first" | cut -d' ' -f1)"
 
 fmt:
 	gofmt -w cmd internal
@@ -40,7 +47,7 @@ vet:
 	go vet ./...
 
 install: build
-	install -Dm755 $(BINARY) $(DESTDIR)$(PREFIX)/bin/relayprobe
+	install -Dm755 $(BINARY) $(DESTDIR)$(PREFIX)/bin/netvex
 
 version:
 	@printf '%s\n' '$(VERSION)'
@@ -56,7 +63,7 @@ release-check:
 	@$(MAKE) check
 
 uninstall:
-	rm -f $(DESTDIR)$(PREFIX)/bin/relayprobe
+	rm -f $(DESTDIR)$(PREFIX)/bin/netvex
 
 clean:
 	rm -rf bin dist

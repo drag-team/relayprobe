@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/drag-team/relayprobe/internal/model"
+	"github.com/drag-team/netvex/internal/model"
 )
 
 type immediateProcessor struct{}

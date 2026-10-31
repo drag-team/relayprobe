@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/drag-team/relayprobe/internal/model"
+	"github.com/drag-team/netvex/internal/model"
 )
 
 func TestParseProxyAndRedaction(t *testing.T) {

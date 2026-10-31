@@ -1,6 +1,6 @@
 # Code of conduct
 
-RelayProbe is committed to a professional, inclusive, and technically rigorous
+NetVex is committed to a professional, inclusive, and technically rigorous
 community. Participation in project spaces requires respectful communication,
 good-faith collaboration, and care for other people's safety and privacy.
 

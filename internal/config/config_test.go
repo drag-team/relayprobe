@@ -91,7 +91,7 @@ func TestLoadPrecedenceEnvironment(t *testing.T) {
 	if err := os.WriteFile(p, []byte(`{"concurrency":12,"connect_timeout":"2s","request_timeout":"3s","progress_interval":"1s"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("RELAYPROBE_CONCURRENCY", "7")
+	t.Setenv("NETVEX_CONCURRENCY", "7")
 	c, err := Load(p)
 	if err != nil {
 		t.Fatal(err)
@@ -112,7 +112,7 @@ func TestLoadRejectsUnknownAndBadEnvironment(t *testing.T) {
 	if _, err := Load(p); err == nil {
 		t.Fatal("unknown field accepted")
 	}
-	t.Setenv("RELAYPROBE_CONCURRENCY", "not-a-number")
+	t.Setenv("NETVEX_CONCURRENCY", "not-a-number")
 	if _, err := Load(""); err == nil {
 		t.Fatal("bad environment accepted")
 	}
@@ -120,41 +120,41 @@ func TestLoadRejectsUnknownAndBadEnvironment(t *testing.T) {
 
 func TestCompleteEnvironmentConfiguration(t *testing.T) {
 	values := map[string]string{
-		"RELAYPROBE_CONCURRENCY":              "9",
-		"RELAYPROBE_QUEUE_SIZE":               "18",
-		"RELAYPROBE_PER_TARGET_CONCURRENCY":   "3",
-		"RELAYPROBE_REQUESTS_PER_SECOND":      "12.5",
-		"RELAYPROBE_REPEAT":                   "4",
-		"RELAYPROBE_MIN_SUCCESS_RATE":         "0.75",
-		"RELAYPROBE_MAX_REDIRECTS":            "1",
-		"RELAYPROBE_MAX_INPUT_BYTES":          "4096",
-		"RELAYPROBE_MAX_INPUT_ENTRIES":        "1234",
-		"RELAYPROBE_MAX_RESPONSE_BYTES":       "2048",
-		"RELAYPROBE_INTELLIGENCE_BODY_BYTES":  "1536",
-		"RELAYPROBE_MIN_RESPONSE_BYTES":       "1024",
-		"RELAYPROBE_MIN_THROUGHPUT_KBPS":      "0",
-		"RELAYPROBE_ALLOW_PRIVATE_TARGETS":    "true",
-		"RELAYPROBE_ALLOW_REMOTE_DNS":         "true",
-		"RELAYPROBE_RETRY_PERMANENT_FAILURES": "true",
-		"RELAYPROBE_STOP_ON_SUCCESS":          "true",
-		"RELAYPROBE_SAVE":                     "true",
-		"RELAYPROBE_TARGETS":                  "https://one.test/, http://two.test/",
-		"RELAYPROBE_ALLOWED_TARGET_HOSTS":     "one.test, two.test",
-		"RELAYPROBE_PROGRESS_INTERVAL":        "750ms",
-		"RELAYPROBE_AUTO_PROBE_TIMEOUT":       "1500ms",
-		"RELAYPROBE_ANONYMITY_BASELINE_IP":    "198.51.100.10",
-		"RELAYPROBE_METADATA_FILE":            "/tmp/relayprobe-metadata.csv",
-		"RELAYPROBE_REQUIRE_TEXT":             "expected marker,application/json",
-		"RELAYPROBE_REJECT_TEXT":              "access denied,captcha",
-		"RELAYPROBE_EXPECT_JSON":              "status=ok,data.region=eu",
-		"RELAYPROBE_EXPECTED_BODY_SHA256":     strings.Repeat("a", 64),
-		"RELAYPROBE_CA_BUNDLE":                "/tmp/destination-ca.pem",
-		"RELAYPROBE_PROXY_CA_BUNDLE":          "/tmp/proxy-ca.pem",
-		"RELAYPROBE_TARGET_MATRIX":            "true",
-		"RELAYPROBE_TARGET_QUORUM":            "1",
-		"RELAYPROBE_ROTATION_SAMPLES":         "3",
-		"RELAYPROBE_ROTATION_INTERVAL":        "2s",
-		"RELAYPROBE_PREFLIGHT":                "report",
+		"NETVEX_CONCURRENCY":              "9",
+		"NETVEX_QUEUE_SIZE":               "18",
+		"NETVEX_PER_TARGET_CONCURRENCY":   "3",
+		"NETVEX_REQUESTS_PER_SECOND":      "12.5",
+		"NETVEX_REPEAT":                   "4",
+		"NETVEX_MIN_SUCCESS_RATE":         "0.75",
+		"NETVEX_MAX_REDIRECTS":            "1",
+		"NETVEX_MAX_INPUT_BYTES":          "4096",
+		"NETVEX_MAX_INPUT_ENTRIES":        "1234",
+		"NETVEX_MAX_RESPONSE_BYTES":       "2048",
+		"NETVEX_INTELLIGENCE_BODY_BYTES":  "1536",
+		"NETVEX_MIN_RESPONSE_BYTES":       "1024",
+		"NETVEX_MIN_THROUGHPUT_KBPS":      "0",
+		"NETVEX_ALLOW_PRIVATE_TARGETS":    "true",
+		"NETVEX_ALLOW_REMOTE_DNS":         "true",
+		"NETVEX_RETRY_PERMANENT_FAILURES": "true",
+		"NETVEX_STOP_ON_SUCCESS":          "true",
+		"NETVEX_SAVE":                     "true",
+		"NETVEX_TARGETS":                  "https://one.test/, http://two.test/",
+		"NETVEX_ALLOWED_TARGET_HOSTS":     "one.test, two.test",
+		"NETVEX_PROGRESS_INTERVAL":        "750ms",
+		"NETVEX_AUTO_PROBE_TIMEOUT":       "1500ms",
+		"NETVEX_ANONYMITY_BASELINE_IP":    "198.51.100.10",
+		"NETVEX_METADATA_FILE":            "/tmp/netvex-metadata.csv",
+		"NETVEX_REQUIRE_TEXT":             "expected marker,application/json",
+		"NETVEX_REJECT_TEXT":              "access denied,captcha",
+		"NETVEX_EXPECT_JSON":              "status=ok,data.region=eu",
+		"NETVEX_EXPECTED_BODY_SHA256":     strings.Repeat("a", 64),
+		"NETVEX_CA_BUNDLE":                "/tmp/destination-ca.pem",
+		"NETVEX_PROXY_CA_BUNDLE":          "/tmp/proxy-ca.pem",
+		"NETVEX_TARGET_MATRIX":            "true",
+		"NETVEX_TARGET_QUORUM":            "1",
+		"NETVEX_ROTATION_SAMPLES":         "3",
+		"NETVEX_ROTATION_INTERVAL":        "2s",
+		"NETVEX_PREFLIGHT":                "report",
 	}
 	for name, value := range values {
 		t.Setenv(name, value)
@@ -178,7 +178,7 @@ func TestCompleteEnvironmentConfiguration(t *testing.T) {
 	if c.AnonymityBaseline != "198.51.100.10" {
 		t.Fatalf("baseline=%q", c.AnonymityBaseline)
 	}
-	if c.MetadataFile != "/tmp/relayprobe-metadata.csv" {
+	if c.MetadataFile != "/tmp/netvex-metadata.csv" {
 		t.Fatalf("metadata_file=%q", c.MetadataFile)
 	}
 	if len(c.RequireText) != 2 || len(c.RejectText) != 2 || len(c.ExpectJSON) != 2 {
@@ -193,8 +193,8 @@ func TestCompleteEnvironmentConfiguration(t *testing.T) {
 }
 
 func TestRejectsInvalidBooleanEnvironment(t *testing.T) {
-	t.Setenv("RELAYPROBE_ALLOW_REMOTE_DNS", "sometimes")
-	if _, err := Load(""); err == nil || !strings.Contains(err.Error(), "RELAYPROBE_ALLOW_REMOTE_DNS") {
+	t.Setenv("NETVEX_ALLOW_REMOTE_DNS", "sometimes")
+	if _, err := Load(""); err == nil || !strings.Contains(err.Error(), "NETVEX_ALLOW_REMOTE_DNS") {
 		t.Fatalf("err=%v", err)
 	}
 }

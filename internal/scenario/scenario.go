@@ -9,7 +9,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/drag-team/relayprobe/internal/config"
+	"github.com/drag-team/netvex/internal/config"
 )
 
 const MaxBytes = 1 << 20

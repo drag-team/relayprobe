@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	inputpkg "github.com/drag-team/relayprobe/internal/input"
-	"github.com/drag-team/relayprobe/internal/model"
+	inputpkg "github.com/drag-team/netvex/internal/input"
+	"github.com/drag-team/netvex/internal/model"
 )
 
 const (

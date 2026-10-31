@@ -22,19 +22,19 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/drag-team/relayprobe/internal/buildinfo"
-	"github.com/drag-team/relayprobe/internal/config"
-	"github.com/drag-team/relayprobe/internal/engine"
-	"github.com/drag-team/relayprobe/internal/fsx"
-	historypkg "github.com/drag-team/relayprobe/internal/history"
-	inputpkg "github.com/drag-team/relayprobe/internal/input"
-	metadatapkg "github.com/drag-team/relayprobe/internal/metadata"
-	"github.com/drag-team/relayprobe/internal/metrics"
-	"github.com/drag-team/relayprobe/internal/model"
-	"github.com/drag-team/relayprobe/internal/output"
-	qualitypkg "github.com/drag-team/relayprobe/internal/quality"
-	"github.com/drag-team/relayprobe/internal/scenario"
-	"github.com/drag-team/relayprobe/internal/store"
+	"github.com/drag-team/netvex/internal/buildinfo"
+	"github.com/drag-team/netvex/internal/config"
+	"github.com/drag-team/netvex/internal/engine"
+	"github.com/drag-team/netvex/internal/fsx"
+	historypkg "github.com/drag-team/netvex/internal/history"
+	inputpkg "github.com/drag-team/netvex/internal/input"
+	metadatapkg "github.com/drag-team/netvex/internal/metadata"
+	"github.com/drag-team/netvex/internal/metrics"
+	"github.com/drag-team/netvex/internal/model"
+	"github.com/drag-team/netvex/internal/output"
+	qualitypkg "github.com/drag-team/netvex/internal/quality"
+	"github.com/drag-team/netvex/internal/scenario"
+	"github.com/drag-team/netvex/internal/store"
 )
 
 const (
@@ -60,7 +60,7 @@ func (c CLI) Run(args []string) int {
 	case "help", "--help", "-h":
 		return c.help()
 	case "version", "--version":
-		fmt.Fprintf(c.Stdout, "relayprobe %s commit=%s built=%s go=%s\n", buildinfo.Version, buildinfo.Commit, buildinfo.Date, runtime.Version())
+		fmt.Fprintf(c.Stdout, "netvex %s commit=%s built=%s go=%s\n", buildinfo.Version, buildinfo.Commit, buildinfo.Date, runtime.Version())
 		return ExitOK
 	case "check":
 		return c.check(args[1:], false)
@@ -95,15 +95,15 @@ func (c CLI) Run(args []string) int {
 	case "completion":
 		return c.completion(args[1:])
 	default:
-		fmt.Fprintf(c.Stderr, "relayprobe: unknown command %q; run 'relayprobe help'\n", args[0])
+		fmt.Fprintf(c.Stderr, "netvex: unknown command %q; run 'netvex help'\n", args[0])
 		return ExitUsage
 	}
 }
 
 func (c CLI) help() int {
-	fmt.Fprint(c.Stdout, `RelayProbe — proxy validation and intelligence
+	fmt.Fprint(c.Stdout, `NetVex — proxy validation and intelligence
 
-Usage: relayprobe <command> [options]
+Usage: netvex <command> [options]
 
 Commands:
   check      validate proxy datasets with bounded concurrency
@@ -124,7 +124,7 @@ Commands:
   completion generate shell completion for bash, zsh, or fish
   version    show build information
 
-Run 'relayprobe <command> --help' for command options.
+Run 'netvex <command> --help' for command options.
 Exit codes: 0 completed, 2 usage/config, 3 operational, 4 no valid input,
 5 validation threshold or quality policy not met, 130 interrupted.
 `)
@@ -1319,14 +1319,14 @@ func canonicalPath(path string) (string, error) {
 
 func (c CLI) inspect(args []string) int {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(c.Stderr, "usage: relayprobe inspect PROXY [check options]")
+		fmt.Fprintln(c.Stderr, "usage: netvex inspect PROXY [check options]")
 		if len(args) > 0 {
 			return ExitOK
 		}
 		return ExitUsage
 	}
 	proxy := args[0]
-	tmp, err := os.CreateTemp("", "relayprobe-inspect-*.txt")
+	tmp, err := os.CreateTemp("", "netvex-inspect-*.txt")
 	if err != nil {
 		return ExitOperational
 	}
@@ -2058,7 +2058,7 @@ func (c CLI) doctor(args []string) int {
 		upperBound := captureLimit * int64(cfg.Concurrency)
 		fmt.Fprintf(c.Stdout, "body capture   OK  per_worker=%d upper_bound=%d budget=%d\n", captureLimit, upperBound, config.MaxConcurrentCaptureBytes)
 	}
-	if d, err := os.MkdirTemp("", "relayprobe-doctor-"); err == nil {
+	if d, err := os.MkdirTemp("", "netvex-doctor-"); err == nil {
 		_ = os.Remove(d)
 		fmt.Fprintln(c.Stdout, "temporary I/O  OK")
 	} else {
@@ -2096,7 +2096,7 @@ type benchProcessor struct{ delay time.Duration }
 
 func (c CLI) completion(args []string) int {
 	if len(args) != 1 {
-		fmt.Fprintln(c.Stderr, "usage: relayprobe completion bash|zsh|fish")
+		fmt.Fprintln(c.Stderr, "usage: netvex completion bash|zsh|fish")
 		return ExitUsage
 	}
 	commands := "check inspect import results runs export stats history pool shard merge explore config doctor bench completion version help"
@@ -2109,7 +2109,7 @@ func (c CLI) completion(args []string) int {
 	checkFlags := strings.Join(flagNames, " ")
 	switch args[0] {
 	case "bash":
-		fmt.Fprintf(c.Stdout, `_relayprobe() {
+		fmt.Fprintf(c.Stdout, `_netvex() {
   local cur="${COMP_WORDS[COMP_CWORD]}"
   if [[ $COMP_CWORD -eq 1 ]]; then
     COMPREPLY=( $(compgen -W %q -- "$cur") )
@@ -2117,11 +2117,11 @@ func (c CLI) completion(args []string) int {
     COMPREPLY=( $(compgen -W %q -- "$cur") )
   fi
 }
-complete -F _relayprobe relayprobe
+complete -F _netvex netvex
 `, commands, checkFlags)
 	case "zsh":
-		fmt.Fprintf(c.Stdout, `#compdef relayprobe
-_relayprobe() {
+		fmt.Fprintf(c.Stdout, `#compdef netvex
+_netvex() {
   local -a commands
   commands=(%s)
   if (( CURRENT == 2 )); then
@@ -2130,15 +2130,15 @@ _relayprobe() {
     _arguments '*:option:(%s)'
   fi
 }
-_relayprobe
+_netvex
 `, strings.Join(strings.Fields(commands), " "), strings.Join(strings.Fields(checkFlags), " "))
 	case "fish":
 		for _, command := range strings.Fields(commands) {
-			fmt.Fprintf(c.Stdout, "complete -c relayprobe -f -n '__fish_use_subcommand' -a %s\n", command)
+			fmt.Fprintf(c.Stdout, "complete -c netvex -f -n '__fish_use_subcommand' -a %s\n", command)
 		}
 		for _, option := range strings.Fields(checkFlags) {
 			if strings.HasPrefix(option, "--") {
-				fmt.Fprintf(c.Stdout, "complete -c relayprobe -f -n '__fish_seen_subcommand_from check' -l %s\n", strings.TrimPrefix(option, "--"))
+				fmt.Fprintf(c.Stdout, "complete -c netvex -f -n '__fish_seen_subcommand_from check' -l %s\n", strings.TrimPrefix(option, "--"))
 			}
 		}
 	default:

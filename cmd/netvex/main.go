@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/drag-team/relayprobe/internal/cli"
+	"github.com/drag-team/netvex/internal/cli"
 )
 
 func main() {

@@ -19,12 +19,13 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
-	"github.com/drag-team/relayprobe/internal/model"
-	"github.com/drag-team/relayprobe/internal/policy"
+	"github.com/drag-team/netvex/internal/model"
+	"github.com/drag-team/netvex/internal/policy"
 )
 
 type memoryConn struct{ *bytes.Reader }
@@ -39,6 +40,16 @@ func (c *memoryConn) SetReadDeadline(time.Time) error {
 }
 func (c *memoryConn) SetWriteDeadline(time.Time) error {
 	return nil
+}
+
+type countingCloseConn struct {
+	net.Conn
+	closes atomic.Int32
+}
+
+func (c *countingCloseConn) Close() error {
+	c.closes.Add(1)
+	return c.Conn.Close()
 }
 
 type memoryAddr string
@@ -372,6 +383,29 @@ func TestCancellationInterruptsHandshake(t *testing.T) {
 	}
 }
 
+func TestNormalCloseUnregistersCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	base := &countingCloseConn{Conn: &memoryConn{Reader: bytes.NewReader(nil)}}
+	conn := watchContext(ctx, base)
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	if got := base.closes.Load(); got != 1 {
+		t.Fatalf("underlying close count=%d want=1", got)
+	}
+}
+
+func BenchmarkWatchContextClose(b *testing.B) {
+	base := &memoryConn{Reader: bytes.NewReader(nil)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	b.ReportAllocs()
+	for range b.N {
+		_ = watchContext(ctx, base).Close()
+	}
+}
+
 func TestMalformedAndRejectedReplies(t *testing.T) {
 	p := model.Proxy{Protocol: model.ProtocolSOCKS5, Host: "proxy", Port: 1080}
 	bad := pipeConnector(func(c net.Conn) { b := make([]byte, 3); _, _ = io.ReadFull(c, b); _, _ = c.Write([]byte{4, 0}) })
@@ -568,7 +602,7 @@ func TestReadResponseLimitedRejectsLFOnlyHeaders(t *testing.T) {
 }
 
 func BenchmarkReadResponseLimited(b *testing.B) {
-	payload := []byte("HTTP/1.1 200 OK\r\nServer: relayprobe-fixture\r\nContent-Type: application/json\r\nContent-Length: 15\r\nX-Request-ID: benchmark\r\n\r\n{\"status\":\"ok\"}")
+	payload := []byte("HTTP/1.1 200 OK\r\nServer: netvex-fixture\r\nContent-Type: application/json\r\nContent-Length: 15\r\nX-Request-ID: benchmark\r\n\r\n{\"status\":\"ok\"}")
 	b.SetBytes(int64(len(payload)))
 	b.ReportAllocs()
 	request := &http.Request{Method: http.MethodGet}

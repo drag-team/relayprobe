@@ -12,11 +12,11 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/drag-team/relayprobe/internal/config"
-	inputpkg "github.com/drag-team/relayprobe/internal/input"
-	"github.com/drag-team/relayprobe/internal/model"
-	"github.com/drag-team/relayprobe/internal/output"
-	"github.com/drag-team/relayprobe/internal/store"
+	"github.com/drag-team/netvex/internal/config"
+	inputpkg "github.com/drag-team/netvex/internal/input"
+	"github.com/drag-team/netvex/internal/model"
+	"github.com/drag-team/netvex/internal/output"
+	"github.com/drag-team/netvex/internal/store"
 )
 
 func (c CLI) shard(args []string) int {
@@ -366,7 +366,7 @@ func (c CLI) explore(args []string) int {
 		}
 		start := page * *pageSize
 		end := minInt(start+*pageSize, len(filtered))
-		fmt.Fprintf(c.Stdout, "\nRelayProbe results  page %d/%d  matches=%d  search=%q\n", page+1, pages, len(filtered), query)
+		fmt.Fprintf(c.Stdout, "\nNetVex results  page %d/%d  matches=%d  search=%q\n", page+1, pages, len(filtered), query)
 		fmt.Fprintln(c.Stdout, "STATUS        SCORE   MEDIAN    PROTOCOL  ENDPOINT")
 		for _, result := range filtered[start:end] {
 			score := "-"

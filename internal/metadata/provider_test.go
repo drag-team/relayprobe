@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/drag-team/relayprobe/internal/model"
+	"github.com/drag-team/netvex/internal/model"
 )
 
 func TestLoadAndLongestPrefixLookup(t *testing.T) {

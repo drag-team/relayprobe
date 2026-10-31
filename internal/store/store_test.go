@@ -1,7 +1,7 @@
 package store
 
 import (
-	"github.com/drag-team/relayprobe/internal/model"
+	"github.com/drag-team/netvex/internal/model"
 	"os"
 	"path/filepath"
 	"strings"

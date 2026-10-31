@@ -12,7 +12,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/drag-team/relayprobe/internal/model"
+	"github.com/drag-team/netvex/internal/model"
 )
 
 type Policy struct {
@@ -185,7 +185,7 @@ type failure struct {
 
 func JUnit(s model.RunSummary) ([]byte, error) {
 	duration := fmt.Sprintf("%.3f", s.DurationMS/1000)
-	suite := testSuite{Name: "relayprobe", Tests: 1, Time: duration, Case: testCase{Classname: "relayprobe.validation", Name: "quality gate", Time: duration}}
+	suite := testSuite{Name: "netvex", Tests: 1, Time: duration, Case: testCase{Classname: "netvex.validation", Name: "quality gate", Time: duration}}
 	if s.Quality != nil && !s.Quality.Passed {
 		parts := make([]string, 0)
 		for _, check := range s.Quality.Checks {

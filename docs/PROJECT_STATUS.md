@@ -4,11 +4,14 @@ Last verified: 2026-10-31
 
 ## Objective and architecture
 
-RelayProbe is an on-demand, terminal-only proxy validation and intelligence
+NetVex is an on-demand, terminal-only proxy validation and intelligence
 application for authorized datasets. It is a dependency-free Go executable with
 a streaming parser, bounded worker engine, destination policy, protocol
 connectors, evidence model, local metadata lookup, optional JSONL history, and
 human or machine output.
+
+Build metadata is derived from the source commit, and
+`make reproducibility-check` verifies byte-identical binaries for a fixed tree.
 
 The development line is `0.7.0-dev`; the latest published tag is `v0.4.0`, and
 result schema version 5 is current. The project is in active development and
@@ -43,8 +46,8 @@ It is not represented as a completed independent security audit.
 - Parser fuzzing: 239,885 executions in 10 seconds with no failure.
 - HTTP response fuzzing: 190,621 executions in 10 seconds covering valid,
   truncated, malformed, and oversized inputs with no failure.
-- Package coverage: core packages range from 46.1% to 100%; engine 65.9%,
-  protocol 77.1%, input 80.3%, policy 85.7%, and metadata 81.1%.
+- Package coverage: core packages range from 46.1% to 100%; engine 71.6%,
+  protocol 77.9%, input 80.3%, policy 85.7%, and metadata 81.1%.
 - Controlled 500,000-item scheduler: 812,682 items/s median at concurrency 128
   across three runs on the non-isolated delivery host.
 - Offline IPv4 metadata lookup: 411 ns/op median, zero allocations across three
@@ -60,6 +63,8 @@ It is not represented as a completed independent security audit.
   and 140,068 B/op median versus 4.21 ms/op and 3,276,633 B/op for full-body
   lowercase matching: about 95.7% fewer allocated bytes for a 13% CPU tradeoff
   limited to assertion-enabled checks.
+- Cancellation registration and normal close measured 0.85-0.90 us/op and
+  200 B/op while avoiding a permanently waiting goroutine per active socket.
 
 The benchmark conditions and historical results are in
 [BENCHMARKS.md](BENCHMARKS.md). Controlled local fixtures are used instead of
@@ -76,7 +81,7 @@ unauthorized external proxy infrastructure.
   a native MMDB dependency could not be acquired in the restricted build environment.
 - Validation requests use HTTP/1.1 after custom proxy negotiation. Direct
   preflight can negotiate HTTP/2, but end-to-end HTTP/2 proxy validation remains under evaluation.
-- Windows files inherit directory ACLs; RelayProbe does not attempt to replace
+- Windows files inherit directory ACLs; NetVex does not attempt to replace
   administrator-managed ACL policy with POSIX permission semantics.
 - Signed releases, SBOMs, and expanded response parsing fuzz targets remain on
   the roadmap.
@@ -87,10 +92,11 @@ unauthorized external proxy infrastructure.
 git status --short
 make check
 make cross-check
+make reproducibility-check
 go test ./internal/input -run '^$' -fuzz '^FuzzParseProxy$' -fuzztime=10s
 make build
-./bin/relayprobe version
-./bin/relayprobe doctor
+./bin/netvex version
+./bin/netvex doctor
 ```
 
 Architectural decisions and threat boundaries are maintained in

@@ -1,13 +1,13 @@
 /bin/
 /dist/
-/.relayprobe/
+/.netvex/
 /*.txt
 *.part
 *.out
 *.prof
 coverage*.txt
 coverage*.xml
-relayprobe-results*.jsonl
+netvex-results*.jsonl
 *.summary.json
 working*.txt
 .DS_Store

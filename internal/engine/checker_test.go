@@ -24,8 +24,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/drag-team/relayprobe/internal/config"
-	"github.com/drag-team/relayprobe/internal/model"
+	"github.com/drag-team/netvex/internal/config"
+	"github.com/drag-team/netvex/internal/model"
 )
 
 type fixedResolver struct {
@@ -138,7 +138,7 @@ func TestAnonymityEvidenceLevels(t *testing.T) {
 }
 
 func TestReadBodyEvidenceStreamsAndCapsCapture(t *testing.T) {
-	payload := bytes.Repeat([]byte("relayprobe"), 200000)
+	payload := bytes.Repeat([]byte("netvex"), 200000)
 	wantDigest := sha256.Sum256(payload)
 	body, count, digest, err := readBodyEvidence(bytes.NewReader(payload), int64(len(payload)), 4096, int64(len(payload)), nil)
 	if err != nil || count != int64(len(payload)) || len(body) != 4096 || digest != hex.EncodeToString(wantDigest[:]) {

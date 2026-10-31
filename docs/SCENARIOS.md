@@ -22,7 +22,7 @@ success ratio; the proxy qualifies when at least the quorum of targets qualifies
 The planned matrix is capped at 1,000 attempts per proxy before network activity.
 
 ```sh
-relayprobe check --scenario examples/scenario.json --preflight report --save proxies.txt
+netvex check --scenario examples/scenario.json --preflight report --save proxies.txt
 ```
 
 Command-line engine options still take precedence where an equivalent flag is
@@ -31,4 +31,4 @@ their target-specific rules. Scenario names become the default result pool label
 unless `--label` is supplied.
 
 Target content must be controlled or explicitly authorized. Assertion rules can
-identify block pages or challenges, but RelayProbe does not bypass them.
+identify block pages or challenges, but NetVex does not bypass them.

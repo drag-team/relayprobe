@@ -1,5 +1,5 @@
 name: Bug report
-description: Report reproducible incorrect behavior in RelayProbe
+description: Report reproducible incorrect behavior in NetVex
 title: "bug: "
 labels: [bug]
 body:
@@ -9,8 +9,8 @@ body:
   - type: input
     id: version
     attributes:
-      label: RelayProbe version
-      description: Paste the output of `relayprobe version`.
+      label: NetVex version
+      description: Paste the output of `netvex version`.
     validations:
       required: true
   - type: input

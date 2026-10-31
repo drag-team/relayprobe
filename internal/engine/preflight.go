@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/drag-team/relayprobe/internal/buildinfo"
-	"github.com/drag-team/relayprobe/internal/model"
+	"github.com/drag-team/netvex/internal/buildinfo"
+	"github.com/drag-team/netvex/internal/model"
 )
 
 func (c *Checker) Preflight(ctx context.Context) map[string]model.TargetHealth {

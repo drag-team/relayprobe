@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/drag-team/relayprobe/internal/config"
-	"github.com/drag-team/relayprobe/internal/model"
-	"github.com/drag-team/relayprobe/internal/store"
+	"github.com/drag-team/netvex/internal/config"
+	"github.com/drag-team/netvex/internal/model"
+	"github.com/drag-team/netvex/internal/store"
 )
 
 func run(args []string, in string) (int, string, string) {
@@ -62,8 +62,8 @@ func TestExplicitStandardInputSource(t *testing.T) {
 	}
 }
 func TestExitCodesAndUnknownCommand(t *testing.T) {
-	if code, _, _ := run([]string{"wat"}, ""); code != ExitUsage {
-		t.Fatalf("code %d", code)
+	if code, _, diag := run([]string{"wat"}, ""); code != ExitUsage || !strings.Contains(diag, "netvex") {
+		t.Fatalf("code=%d diag=%q", code, diag)
 	}
 	if code, _, _ := run([]string{"import"}, "bad\n"); code != ExitNoValidInput {
 		t.Fatalf("code %d", code)
@@ -76,6 +76,13 @@ func TestExitCodesAndUnknownCommand(t *testing.T) {
 	}
 	if code, _, _ := run([]string{"check", "--min-success-rate", "0"}, ""); code != ExitUsage {
 		t.Fatalf("zero success rate code %d", code)
+	}
+}
+
+func TestHelpUsesNetVexIdentity(t *testing.T) {
+	code, out, diag := run([]string{"help"}, "")
+	if code != ExitOK || !strings.Contains(out, "NetVex") || !strings.Contains(out, "Usage: netvex") || diag != "" {
+		t.Fatalf("code=%d out=%q diag=%q", code, out, diag)
 	}
 }
 
@@ -254,7 +261,7 @@ func TestResumeIncludesCheckpointResults(t *testing.T) {
 func TestShellCompletions(t *testing.T) {
 	for _, shell := range []string{"bash", "zsh", "fish"} {
 		code, out, diag := run([]string{"completion", shell}, "")
-		if code != ExitOK || !strings.Contains(out, "relayprobe") || !strings.Contains(out, "auto-probe-timeout") || !strings.Contains(out, "intelligence-bytes") || diag != "" {
+		if code != ExitOK || !strings.Contains(out, "netvex") || !strings.Contains(out, "auto-probe-timeout") || !strings.Contains(out, "intelligence-bytes") || diag != "" {
 			t.Fatalf("shell=%s code=%d out=%q diag=%q", shell, code, out, diag)
 		}
 	}
@@ -406,8 +413,8 @@ func TestExecutionProfilesAndOverrides(t *testing.T) {
 }
 
 func TestExplicitFalseBooleanOverridesEnvironmentAndProfile(t *testing.T) {
-	t.Setenv("RELAYPROBE_ALLOW_REMOTE_DNS", "true")
-	t.Setenv("RELAYPROBE_SAVE", "true")
+	t.Setenv("NETVEX_ALLOW_REMOTE_DNS", "true")
+	t.Setenv("NETVEX_SAVE", "true")
 	o := checkOptions{
 		profile: "fast", protocol: "http", format: "table", inputFormat: "text",
 		color: "never", rate: -1, maxRedirects: -1,

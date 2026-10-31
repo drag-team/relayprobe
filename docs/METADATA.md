@@ -1,6 +1,6 @@
 # Offline exit-IP metadata
 
-RelayProbe can enrich an observed exit IP from an operator-supplied CSV database.
+NetVex can enrich an observed exit IP from an operator-supplied CSV database.
 Lookup is entirely local: no proxy, exit IP, target, or credential is sent to a
 metadata API.
 
@@ -32,20 +32,20 @@ CSV are rejected before proxy validation starts.
 ## Usage
 
 ```sh
-relayprobe check --metadata-file ip-metadata.csv.gz --save proxies.txt
-relayprobe results --run latest --country ES --network-type residential
-relayprobe export --run latest --asn AS3352 --min-score 75 --format csv --output as3352.csv
+netvex check --metadata-file ip-metadata.csv.gz --save proxies.txt
+netvex results --run latest --country ES --network-type residential
+netvex export --run latest --asn AS3352 --min-score 75 --format csv --output as3352.csv
 ```
 
 The configuration file field is `metadata_file`; the environment equivalent is
-`RELAYPROBE_METADATA_FILE`.
+`NETVEX_METADATA_FILE`.
 
 ## Data quality
 
 Country, city, ASN, and network type are claims made by the chosen dataset.
 Mobile and residential address space can change frequently, anycast exits may
 have several valid locations, and an ASN can contain both hosting and access
-networks. RelayProbe does not convert an organization name into a network type
+networks. NetVex does not convert an organization name into a network type
 or present metadata as independently verified fact.
 
 Review the source's license before redistributing a database or enriched output.

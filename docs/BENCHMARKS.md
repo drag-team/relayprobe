@@ -1,6 +1,6 @@
 # Benchmark method and results
 
-`relayprobe bench` measures bounded scheduler, queue, result, and model overhead
+`netvex bench` measures bounded scheduler, queue, result, and model overhead
 without network access. `--delay` adds a controlled per-item wait. It does not
 claim real proxy throughput, because that is dominated by remote latency and
 timeouts.
@@ -9,13 +9,13 @@ Reproduce with:
 
 ```sh
 for c in 1 16 64 128 256; do
-  ./bin/relayprobe bench --count 100000 --concurrency "$c"
+  ./bin/netvex bench --count 100000 --concurrency "$c"
 done
-/usr/bin/time -v ./bin/relayprobe bench --count 1000000 --concurrency 128
+/usr/bin/time -v ./bin/netvex bench --count 1000000 --concurrency 128
 go test -bench . -benchmem ./internal/engine
 ```
 
-RelayProbe 0.2.0 delivery-host results (Ubuntu 26.04.1, Linux 7.0, 4 vCPU
+NetVex 0.2.0 delivery-host results (Ubuntu 26.04.1, Linux 7.0, 4 vCPU
 Haswell-class KVM, Go 1.26.8, 2026-10-24) are the median of three runs with
 500,000 zero-delay items. The host was not isolated, so normal VPS scheduling
 noise remains:
@@ -33,7 +33,7 @@ maximum RSS; observed scheduler throughput ranged from 542k to 760k items/s
 under changing host load. The Go microbenchmark (three runs) reported 1-worker
 2.06–2.14 us/op, 16-worker 1.33–1.36 us/op, and 128-worker 1.01–1.03 us/op,
 all at 32 B/op and 3 allocations/op. These are scheduler measurements, not
-network claims. They also show why RelayProbe does not blindly recommend the
+network claims. They also show why NetVex does not blindly recommend the
 largest concurrency setting.
 
 A separate streamed-input check normalized 200,000 distinct entries in 1.10 s
@@ -60,7 +60,7 @@ concurrency 128 measured 756,062–817,518 items/s, with a median of 813,349
 items/s. Host scheduling remained uncontrolled, so this is recorded as a
 regression baseline rather than a network-throughput promise.
 
-The public-release verification of RelayProbe 0.4.0 on 2026-10-25 measured
+The public-release verification of NetVex 0.4.0 on 2026-10-25 measured
 816,643 items/s median under the same 500,000-item, 128-worker scheduler
 benchmark (range 791,160–852,932 items/s). A one-million-item run measured
 850,592 items/s, 1.17 seconds wall time, and 13,116 KiB maximum RSS. Reliability
@@ -83,7 +83,7 @@ and approximately 3.7% median time in this small-input test. Reproduce with
 `go test -run '^$' -bench '^BenchmarkParser' -benchmem -count=3 ./internal/input`.
 The throughput column counts decompressed bytes and is not a network result.
 
-The RelayProbe 0.6.0 development scheduler measured 786,085 items/s median
+The NetVex 0.6.0 development scheduler measured 786,085 items/s median
 across three 500,000-item runs at concurrency 128 on the same non-isolated host
 (range 779,540–855,874 items/s). This remains an engine-overhead baseline, not a
 network proxy rate.
@@ -92,7 +92,7 @@ The offline IPv4 longest-prefix metadata lookup benchmark measured a median of
 408 ns/op across three samples, with zero allocations per lookup. Reproduce with
 `go test -run '^$' -bench '^BenchmarkLookupIPv4$' -benchmem -count=3 ./internal/metadata`.
 
-The RelayProbe 0.7.0 development engine measured 812,682 items/s median across
+The NetVex 0.7.0 development engine measured 812,682 items/s median across
 three 500,000-item runs at concurrency 128 on 2026-10-26 (range
 789,790–869,883 items/s). The corresponding scheduler microbenchmarks measured
 1,962 ns/op with one worker, 1,245 ns/op with 16 workers, and 1,029 ns/op with
@@ -160,4 +160,16 @@ Reproduce both measurements with:
 
 ```sh
 go test -run '^$' -bench '^BenchmarkReadBodyEvidence$' -benchmem -count=5 ./internal/engine
+```
+
+### Cancellation registration
+
+Socket cancellation is registered without a permanently waiting goroutine per
+connection. On the same four-vCPU host, five samples of the registration and
+normal-close path measured 0.85-0.90 us/op, 200 B/op, and four allocations.
+The benchmark is a local regression signal; the principal gain is eliminating
+one live waiter and channel per active socket under high concurrency.
+
+```sh
+go test -run '^$' -bench '^BenchmarkWatchContextClose$' -benchmem -count=5 ./internal/protocol
 ```

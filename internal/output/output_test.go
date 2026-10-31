@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/csv"
 	"encoding/json"
-	"github.com/drag-team/relayprobe/internal/model"
+	"github.com/drag-team/netvex/internal/model"
 	"strings"
 	"testing"
 )

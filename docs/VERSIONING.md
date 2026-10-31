@@ -1,6 +1,6 @@
 # Versioning and releases
 
-RelayProbe uses Semantic Versioning. Published versions have the form `vX.Y.Z`;
+NetVex uses Semantic Versioning. Published versions have the form `vX.Y.Z`;
 development versions use `X.Y.Z-dev` on the default branch.
 
 ## Sources of version information
@@ -10,8 +10,8 @@ development versions use `X.Y.Z-dev` on the default branch.
 | [`VERSION`](../VERSION) | Version used by local Makefile builds |
 | [`CHANGELOG.md`](../CHANGELOG.md) | Human-readable changes in each version |
 | Git tag `vX.Y.Z` | Immutable source revision for a published version |
-| [GitHub Releases](https://github.com/drag-team/relayprobe/releases) | Platform archives, checksums, and release notes |
-| `relayprobe version` | Version, commit, build time, Go version, OS, and architecture of an executable |
+| [GitHub Releases](https://github.com/drag-team/netvex/releases) | Platform archives, checksums, and release notes |
+| `netvex version` | Version, commit, build time, Go version, OS, and architecture of an executable |
 
 The repository does not commit generated binaries. Development work stays in
 the `Unreleased` changelog section until a release is prepared. A development

@@ -21,13 +21,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/drag-team/relayprobe/internal/buildinfo"
-	"github.com/drag-team/relayprobe/internal/config"
-	"github.com/drag-team/relayprobe/internal/intel"
-	"github.com/drag-team/relayprobe/internal/model"
-	"github.com/drag-team/relayprobe/internal/policy"
-	"github.com/drag-team/relayprobe/internal/protocol"
-	"github.com/drag-team/relayprobe/internal/score"
+	"github.com/drag-team/netvex/internal/buildinfo"
+	"github.com/drag-team/netvex/internal/config"
+	"github.com/drag-team/netvex/internal/intel"
+	"github.com/drag-team/netvex/internal/model"
+	"github.com/drag-team/netvex/internal/policy"
+	"github.com/drag-team/netvex/internal/protocol"
+	"github.com/drag-team/netvex/internal/score"
 )
 
 type Checker struct {

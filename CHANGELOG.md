@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to RelayProbe are documented in this file. The project uses
+All notable changes to NetVex are documented in this file. The project uses
 [Semantic Versioning](https://semver.org/) and follows the structure of
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
@@ -8,6 +8,10 @@ All notable changes to RelayProbe are documented in this file. The project uses
 
 ### Added
 
+- A complete NetVex product identity across the executable, Go module,
+  configuration namespace, artifacts, CI, documentation, and repository metadata.
+- A deterministic binary build gate using commit-derived timestamps, read-only
+  module resolution, trimmed paths, and explicit VCS metadata control.
 - Streaming multi-pattern response matching for ASCII content assertions,
   avoiding full-body retention and a second lowercase copy while preserving a
   Unicode-compatible bounded path.
@@ -88,6 +92,9 @@ All notable changes to RelayProbe are documented in this file. The project uses
   connections, unexpected EOF, and operating-system timeouts.
 - Shell completion options are generated from the actual check flag set so new
   flags cannot silently drift out of completion scripts.
+- Connection cancellation uses context callbacks instead of one waiting
+  goroutine and channel per live socket, reducing scheduler pressure at high
+  concurrency without weakening interruption behavior.
 
 ### Fixed
 
@@ -159,8 +166,8 @@ All notable changes to RelayProbe are documented in this file. The project uses
 
 - Initial terminal-only validation engine and destination security policy.
 
-[Unreleased]: https://github.com/drag-team/relayprobe/compare/v0.4.0...HEAD
-[0.4.0]: https://github.com/drag-team/relayprobe/releases/tag/v0.4.0
-[0.3.0]: https://github.com/drag-team/relayprobe/releases/tag/v0.3.0
-[0.2.0]: https://github.com/drag-team/relayprobe/releases/tag/v0.2.0
-[0.1.0]: https://github.com/drag-team/relayprobe/releases/tag/v0.1.0
+[Unreleased]: https://github.com/drag-team/netvex/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/drag-team/netvex/releases/tag/v0.4.0
+[0.3.0]: https://github.com/drag-team/netvex/releases/tag/v0.3.0
+[0.2.0]: https://github.com/drag-team/netvex/releases/tag/v0.2.0
+[0.1.0]: https://github.com/drag-team/netvex/releases/tag/v0.1.0

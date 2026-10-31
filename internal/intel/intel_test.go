@@ -3,7 +3,7 @@ package intel
 import (
 	"testing"
 
-	"github.com/drag-team/relayprobe/internal/model"
+	"github.com/drag-team/netvex/internal/model"
 )
 
 func TestTargetResultsAndQuorumEvidence(t *testing.T) {

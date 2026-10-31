@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/drag-team/relayprobe/internal/model"
+	"github.com/drag-team/netvex/internal/model"
 )
 
 type Format string

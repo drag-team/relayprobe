@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/drag-team/relayprobe/internal/config"
+	"github.com/drag-team/netvex/internal/config"
 )
 
 func TestLoadAndApplyScenario(t *testing.T) {

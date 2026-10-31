@@ -1,6 +1,6 @@
 # Automation and distributed datasets
 
-RelayProbe keeps machine results on stdout and diagnostics on stderr. JSONL is
+NetVex keeps machine results on stdout and diagnostics on stderr. JSONL is
 the lossless streaming format; CSV is flat; TXT contains redacted proxy URIs.
 Exit 5 means validation completed but a requested success or quality threshold
 was not met.
@@ -15,9 +15,9 @@ Timeout rate uses raw attempts; proxy success, failure, and inconclusive rates
 use processed endpoints.
 
 ```sh
-relayprobe check --scenario examples/scenario.json \
+netvex check --scenario examples/scenario.json \
   --policy examples/quality-policy.json \
-  --summary-output summary.json --junit-output relayprobe.xml proxies.txt
+  --summary-output summary.json --junit-output netvex.xml proxies.txt
 ```
 
 Reports and summaries are mode 0600, synchronized, and atomically published.
@@ -25,8 +25,8 @@ Reports and summaries are mode 0600, synchronized, and atomically published.
 ## Checkpoint and resume
 
 ```sh
-relayprobe check --checkpoint run.checkpoint.jsonl proxies.txt
-relayprobe check --resume run.checkpoint.jsonl proxies.txt
+netvex check --checkpoint run.checkpoint.jsonl proxies.txt
+netvex check --resume run.checkpoint.jsonl proxies.txt
 ```
 
 Each completed result is appended before ordinary output and synchronized every
@@ -44,8 +44,8 @@ and symbolic links are rejected without being followed.
 ## Shard and merge
 
 ```sh
-relayprobe shard --shards 8 --strategy hash --output-dir shards proxies.txt
-relayprobe merge --strategy best --format jsonl --output combined.jsonl shard-*.jsonl
+netvex shard --shards 8 --strategy hash --output-dir shards proxies.txt
+netvex merge --strategy best --format jsonl --output combined.jsonl shard-*.jsonl
 ```
 
 Hash sharding is deterministic by endpoint and keeps credential variants on one

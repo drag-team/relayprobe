@@ -1,6 +1,6 @@
-# Contributing to RelayProbe
+# Contributing to NetVex
 
-RelayProbe welcomes focused, tested contributions that preserve its terminal-only
+NetVex welcomes focused, tested contributions that preserve its terminal-only
 design, bounded resource model, and destination security guarantees.
 
 ## Before opening a change
@@ -18,8 +18,8 @@ request.
 Requirements are Go 1.24 or newer, GNU Make, and Git.
 
 ```sh
-git clone https://github.com/drag-team/relayprobe.git
-cd relayprobe
+git clone https://github.com/drag-team/netvex.git
+cd netvex
 make check
 make build
 ```

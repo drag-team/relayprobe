@@ -124,9 +124,9 @@ func Defaults() Config {
 
 func defaultDataDir() string {
 	if d, err := os.UserConfigDir(); err == nil {
-		return filepath.Join(d, "relayprobe")
+		return filepath.Join(d, "netvex")
 	}
-	return ".relayprobe"
+	return ".netvex"
 }
 
 type diskConfig Config
@@ -167,14 +167,14 @@ func applyEnv(c *Config) error {
 		name string
 		dst  *int
 	}{
-		{"RELAYPROBE_CONCURRENCY", &c.Concurrency},
-		{"RELAYPROBE_QUEUE_SIZE", &c.QueueSize},
-		{"RELAYPROBE_PER_TARGET_CONCURRENCY", &c.PerTarget},
-		{"RELAYPROBE_REPEAT", &c.Repeat},
-		{"RELAYPROBE_MAX_REDIRECTS", &c.MaxRedirects},
-		{"RELAYPROBE_TARGET_QUORUM", &c.TargetQuorum},
-		{"RELAYPROBE_ROTATION_SAMPLES", &c.RotationSamples},
-		{"RELAYPROBE_MAX_INPUT_ENTRIES", &c.MaxInputEntries},
+		{"NETVEX_CONCURRENCY", &c.Concurrency},
+		{"NETVEX_QUEUE_SIZE", &c.QueueSize},
+		{"NETVEX_PER_TARGET_CONCURRENCY", &c.PerTarget},
+		{"NETVEX_REPEAT", &c.Repeat},
+		{"NETVEX_MAX_REDIRECTS", &c.MaxRedirects},
+		{"NETVEX_TARGET_QUORUM", &c.TargetQuorum},
+		{"NETVEX_ROTATION_SAMPLES", &c.RotationSamples},
+		{"NETVEX_MAX_INPUT_ENTRIES", &c.MaxInputEntries},
 	} {
 		if err := envInt(item.name, item.dst); err != nil {
 			return err
@@ -184,10 +184,10 @@ func applyEnv(c *Config) error {
 		name string
 		dst  *int64
 	}{
-		{"RELAYPROBE_MAX_INPUT_BYTES", &c.MaxInputBytes},
-		{"RELAYPROBE_MAX_RESPONSE_BYTES", &c.MaxResponseBytes},
-		{"RELAYPROBE_INTELLIGENCE_BODY_BYTES", &c.IntelligenceBytes},
-		{"RELAYPROBE_MIN_RESPONSE_BYTES", &c.MinResponseBytes},
+		{"NETVEX_MAX_INPUT_BYTES", &c.MaxInputBytes},
+		{"NETVEX_MAX_RESPONSE_BYTES", &c.MaxResponseBytes},
+		{"NETVEX_INTELLIGENCE_BODY_BYTES", &c.IntelligenceBytes},
+		{"NETVEX_MIN_RESPONSE_BYTES", &c.MinResponseBytes},
 	} {
 		if err := envInt64(item.name, item.dst); err != nil {
 			return err
@@ -197,9 +197,9 @@ func applyEnv(c *Config) error {
 		name string
 		dst  *float64
 	}{
-		{"RELAYPROBE_REQUESTS_PER_SECOND", &c.RateLimit},
-		{"RELAYPROBE_MIN_SUCCESS_RATE", &c.MinSuccessRate},
-		{"RELAYPROBE_MIN_THROUGHPUT_KBPS", &c.MinThroughputKBPS},
+		{"NETVEX_REQUESTS_PER_SECOND", &c.RateLimit},
+		{"NETVEX_MIN_SUCCESS_RATE", &c.MinSuccessRate},
+		{"NETVEX_MIN_THROUGHPUT_KBPS", &c.MinThroughputKBPS},
 	} {
 		if err := envFloat(item.name, item.dst); err != nil {
 			return err
@@ -209,72 +209,72 @@ func applyEnv(c *Config) error {
 		name string
 		dst  *bool
 	}{
-		{"RELAYPROBE_ALLOW_PRIVATE_TARGETS", &c.AllowPrivate},
-		{"RELAYPROBE_ALLOW_REMOTE_DNS", &c.AllowRemoteDNS},
-		{"RELAYPROBE_RETRY_PERMANENT_FAILURES", &c.RetryPermanent},
-		{"RELAYPROBE_STOP_ON_SUCCESS", &c.StopOnSuccess},
-		{"RELAYPROBE_SAVE", &c.Save},
-		{"RELAYPROBE_TARGET_MATRIX", &c.TargetMatrix},
+		{"NETVEX_ALLOW_PRIVATE_TARGETS", &c.AllowPrivate},
+		{"NETVEX_ALLOW_REMOTE_DNS", &c.AllowRemoteDNS},
+		{"NETVEX_RETRY_PERMANENT_FAILURES", &c.RetryPermanent},
+		{"NETVEX_STOP_ON_SUCCESS", &c.StopOnSuccess},
+		{"NETVEX_SAVE", &c.Save},
+		{"NETVEX_TARGET_MATRIX", &c.TargetMatrix},
 	} {
 		if err := envBool(item.name, item.dst); err != nil {
 			return err
 		}
 	}
-	if v := os.Getenv("RELAYPROBE_CONNECT_TIMEOUT"); v != "" {
+	if v := os.Getenv("NETVEX_CONNECT_TIMEOUT"); v != "" {
 		c.ConnectTimeoutRaw = v
 	}
-	if v := os.Getenv("RELAYPROBE_REQUEST_TIMEOUT"); v != "" {
+	if v := os.Getenv("NETVEX_REQUEST_TIMEOUT"); v != "" {
 		c.RequestTimeoutRaw = v
 	}
-	if v := os.Getenv("RELAYPROBE_AUTO_PROBE_TIMEOUT"); v != "" {
+	if v := os.Getenv("NETVEX_AUTO_PROBE_TIMEOUT"); v != "" {
 		c.AutoProbeRaw = v
 	}
-	if v := os.Getenv("RELAYPROBE_DATA_DIR"); v != "" {
+	if v := os.Getenv("NETVEX_DATA_DIR"); v != "" {
 		c.DataDir = v
 	}
-	if v := os.Getenv("RELAYPROBE_METADATA_FILE"); v != "" {
+	if v := os.Getenv("NETVEX_METADATA_FILE"); v != "" {
 		c.MetadataFile = v
 	}
-	if v := os.Getenv("RELAYPROBE_CA_BUNDLE"); v != "" {
+	if v := os.Getenv("NETVEX_CA_BUNDLE"); v != "" {
 		c.CABundle = v
 	}
-	if v := os.Getenv("RELAYPROBE_PROXY_CA_BUNDLE"); v != "" {
+	if v := os.Getenv("NETVEX_PROXY_CA_BUNDLE"); v != "" {
 		c.ProxyCABundle = v
 	}
-	if v := os.Getenv("RELAYPROBE_EXPECTED_BODY_SHA256"); v != "" {
+	if v := os.Getenv("NETVEX_EXPECTED_BODY_SHA256"); v != "" {
 		c.ExpectedBodySHA = strings.ToLower(strings.TrimSpace(v))
 	}
-	if v := os.Getenv("RELAYPROBE_PREFLIGHT"); v != "" {
+	if v := os.Getenv("NETVEX_PREFLIGHT"); v != "" {
 		c.Preflight = strings.ToLower(strings.TrimSpace(v))
 	}
-	if v := os.Getenv("RELAYPROBE_TARGETS"); v != "" {
+	if v := os.Getenv("NETVEX_TARGETS"); v != "" {
 		c.Targets = envList(v)
 	}
-	if v := os.Getenv("RELAYPROBE_ALLOWED_TARGET_HOSTS"); v != "" {
+	if v := os.Getenv("NETVEX_ALLOWED_TARGET_HOSTS"); v != "" {
 		c.AllowedHosts = envList(v)
 	}
-	if v := os.Getenv("RELAYPROBE_REQUIRE_TEXT"); v != "" {
+	if v := os.Getenv("NETVEX_REQUIRE_TEXT"); v != "" {
 		c.RequireText = envList(v)
 	}
-	if v := os.Getenv("RELAYPROBE_REJECT_TEXT"); v != "" {
+	if v := os.Getenv("NETVEX_REJECT_TEXT"); v != "" {
 		c.RejectText = envList(v)
 	}
-	if v := os.Getenv("RELAYPROBE_EXPECT_JSON"); v != "" {
+	if v := os.Getenv("NETVEX_EXPECT_JSON"); v != "" {
 		c.ExpectJSON = envList(v)
 	}
-	if v := os.Getenv("RELAYPROBE_ANONYMITY_BASELINE_IP"); v != "" {
+	if v := os.Getenv("NETVEX_ANONYMITY_BASELINE_IP"); v != "" {
 		c.AnonymityBaseline = strings.TrimSpace(v)
 	}
-	if v := os.Getenv("RELAYPROBE_DNS_CACHE_TTL"); v != "" {
+	if v := os.Getenv("NETVEX_DNS_CACHE_TTL"); v != "" {
 		c.DNSCacheTTLRaw = v
 	}
-	if v := os.Getenv("RELAYPROBE_RETRY_BACKOFF"); v != "" {
+	if v := os.Getenv("NETVEX_RETRY_BACKOFF"); v != "" {
 		c.RetryBackoffRaw = v
 	}
-	if v := os.Getenv("RELAYPROBE_ROTATION_INTERVAL"); v != "" {
+	if v := os.Getenv("NETVEX_ROTATION_INTERVAL"); v != "" {
 		c.RotationRaw = v
 	}
-	if v := os.Getenv("RELAYPROBE_PROGRESS_INTERVAL"); v != "" {
+	if v := os.Getenv("NETVEX_PROGRESS_INTERVAL"); v != "" {
 		c.ProgressRaw = v
 	}
 	return nil

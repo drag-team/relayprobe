@@ -1,17 +1,17 @@
-# RelayProbe
+# NetVex
 
-[![CI](https://github.com/drag-team/relayprobe/actions/workflows/ci.yml/badge.svg)](https://github.com/drag-team/relayprobe/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/drag-team/relayprobe?sort=semver)](https://github.com/drag-team/relayprobe/releases)
+[![CI](https://github.com/drag-team/netvex/actions/workflows/ci.yml/badge.svg)](https://github.com/drag-team/netvex/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/drag-team/netvex?sort=semver)](https://github.com/drag-team/netvex/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Go version](https://img.shields.io/badge/Go-1.24%2B-00ADD8.svg)](go.mod)
 
-RelayProbe is a fast, terminal-only proxy validation and intelligence tool for
+NetVex is a fast, terminal-only proxy validation and intelligence tool for
 authorized datasets. It validates complete requests rather than treating an
 open port as proof that a proxy works. HTTP, TLS-encrypted HTTPS proxies, HTTPS
 destinations through CONNECT, SOCKS4, SOCKS4a, and SOCKS5 are supported by one
 bounded, streaming engine.
 
-RelayProbe is an on-demand CLI. It has no web interface, listening service,
+NetVex is an on-demand CLI. It has no web interface, listening service,
 daemon, telemetry, or root requirement.
 
 ## Highlights
@@ -35,21 +35,21 @@ daemon, telemetry, or root requirement.
 
 ## Install
 
-RelayProbe requires Go 1.24 or newer when building from source.
+NetVex requires Go 1.24 or newer when building from source.
 
 Stable Linux, macOS, Windows, and FreeBSD amd64/arm64 archives and their
 SHA-256 files are published on the
-[GitHub Releases page](https://github.com/drag-team/relayprobe/releases).
+[GitHub Releases page](https://github.com/drag-team/netvex/releases).
 Source development on `main` may be newer than the latest release. See
 [versioning and releases](docs/VERSIONING.md) for the exact policy and use
-`relayprobe version` to identify any installed executable.
+`netvex version` to identify any installed executable.
 
 ```sh
-git clone https://github.com/drag-team/relayprobe.git
-cd relayprobe
+git clone https://github.com/drag-team/netvex.git
+cd netvex
 make check
 make install
-relayprobe version
+netvex version
 ```
 
 `make install` writes to `$HOME/.local/bin` by default. Override the destination
@@ -57,7 +57,7 @@ with `make install PREFIX=/custom/prefix`. A system-wide installation is not
 required.
 
 On macOS and FreeBSD, the source workflow is the same. On Windows, download the
-ZIP release or build `relayprobe.exe` with `go build -trimpath ./cmd/relayprobe`.
+ZIP release or build `netvex.exe` with `go build -trimpath ./cmd/netvex`.
 PowerShell, Command Prompt, and non-interactive pipelines can invoke the same
 CLI; shell completion generation remains intended for Bash, Zsh, and Fish.
 
@@ -76,7 +76,7 @@ To build without installing:
 
 ```sh
 make build
-./bin/relayprobe version
+./bin/netvex version
 ```
 
 ## Quick start
@@ -85,7 +85,7 @@ Validate HTTP proxies from `proxies.txt` and atomically save the working entries
 including their credentials, to a private `a.txt` file (mode 0600 on POSIX):
 
 ```sh
-relayprobe check --protocol http --profile fast --allow-remote-dns --quiet --working-output a.txt --force proxies.txt
+netvex check --protocol http --profile fast --allow-remote-dns --quiet --working-output a.txt --force proxies.txt
 ```
 
 `--allow-remote-dns` is useful for commercial gateways that require the target
@@ -96,36 +96,36 @@ Remove it when the provider accepts an IP-pinned CONNECT target.
 Common workflows:
 
 ```sh
-relayprobe check proxies.txt
-relayprobe check --format jsonl --concurrency 128 proxies.txt > results.jsonl
-relayprobe check --concurrency auto --preflight report --checkpoint run.jsonl proxies.txt
-relayprobe check --resume run.jsonl proxies.txt
-relayprobe check --scenario examples/scenario.json --policy examples/quality-policy.json --junit-output relayprobe.xml proxies.txt
-relayprobe check --format txt --output-status ok proxies.txt > working-redacted.txt
-relayprobe check --quiet --summary-output summary.json --require-count 10 proxies.txt
-relayprobe check --reject-text "access denied" --reject-text "cf-turnstile" proxies.txt
-relayprobe check --expect-json status=ok --expect-json data.region=us-east proxies.txt
-relayprobe check --target https://download.example/payload.bin --min-response-bytes 262144 --min-throughput-kbps 500 proxies.txt
-relayprobe check --baseline-ip 198.51.100.10 --metadata-file ip-metadata.csv.gz --save proxies.txt
-relayprobe inspect socks5://127.0.0.1:1080 --target https://example.com/
-relayprobe import --protocol socks5 raw.txt > normalized.txt
-relayprobe check --input-format json --repeat 5 --save proxies.json
-relayprobe results --run latest --status ok --sort score --descending
-relayprobe export --run latest --status ok --format csv --output working.csv
-relayprobe stats --run latest --json
-relayprobe history --runs 20
-relayprobe pool --run latest
-relayprobe explore --run latest
-relayprobe shard --shards 4 --output-dir shards proxies.txt
-relayprobe merge --strategy best --output combined.jsonl run-a.jsonl run-b.jsonl
-relayprobe runs --limit 20
-relayprobe runs prune --keep 50
-relayprobe runs prune --keep 50 --execute
-relayprobe doctor
-relayprobe bench --count 100000 --concurrency 128
+netvex check proxies.txt
+netvex check --format jsonl --concurrency 128 proxies.txt > results.jsonl
+netvex check --concurrency auto --preflight report --checkpoint run.jsonl proxies.txt
+netvex check --resume run.jsonl proxies.txt
+netvex check --scenario examples/scenario.json --policy examples/quality-policy.json --junit-output netvex.xml proxies.txt
+netvex check --format txt --output-status ok proxies.txt > working-redacted.txt
+netvex check --quiet --summary-output summary.json --require-count 10 proxies.txt
+netvex check --reject-text "access denied" --reject-text "cf-turnstile" proxies.txt
+netvex check --expect-json status=ok --expect-json data.region=us-east proxies.txt
+netvex check --target https://download.example/payload.bin --min-response-bytes 262144 --min-throughput-kbps 500 proxies.txt
+netvex check --baseline-ip 198.51.100.10 --metadata-file ip-metadata.csv.gz --save proxies.txt
+netvex inspect socks5://127.0.0.1:1080 --target https://example.com/
+netvex import --protocol socks5 raw.txt > normalized.txt
+netvex check --input-format json --repeat 5 --save proxies.json
+netvex results --run latest --status ok --sort score --descending
+netvex export --run latest --status ok --format csv --output working.csv
+netvex stats --run latest --json
+netvex history --runs 20
+netvex pool --run latest
+netvex explore --run latest
+netvex shard --shards 4 --output-dir shards proxies.txt
+netvex merge --strategy best --output combined.jsonl run-a.jsonl run-b.jsonl
+netvex runs --limit 20
+netvex runs prune --keep 50
+netvex runs prune --keep 50 --execute
+netvex doctor
+netvex bench --count 100000 --concurrency 128
 ```
 
-Run `relayprobe help` or `relayprobe <command> --help` for the complete command
+Run `netvex help` or `netvex <command> --help` for the complete command
 reference.
 
 ## Input
@@ -154,7 +154,7 @@ line.
 Gzip input is detected by its magic bytes on files and standard input. Automatic
 format detection understands names such as `proxies.csv.gz` and
 `proxies.jsonl.gz`; explicit `--input-format` remains available for streams
-without a useful filename. With no input paths RelayProbe reads standard input;
+without a useful filename. With no input paths NetVex reads standard input;
 `-` can also select standard input explicitly among file arguments.
 
 URI credentials must be percent-encoded where necessary. Supply credentials in
@@ -175,7 +175,7 @@ hashes when constant parser memory is more important than duplicate suppression.
 
 ## Validation model
 
-A result is `ok` only after RelayProbe receives a valid HTTP response through
+A result is `ok` only after NetVex receives a valid HTTP response through
 the proxy. It separately records resolution, TCP connection, proxy negotiation,
 tunnel creation, TLS, request, response, and completion stages. Destination-side
 DNS, TLS, upstream, and HTTP failures can be `inconclusive` rather than falsely
@@ -190,7 +190,7 @@ hostname CONNECT, and absolute-form HTTP forwarding require
 
 `https://` in a proxy URI means TLS is established and certificate-verified to
 the proxy itself before HTTP forwarding or CONNECT negotiation. This is distinct
-from using an HTTP proxy to reach an HTTPS destination. RelayProbe never exposes
+from using an HTTP proxy to reach an HTTPS destination. NetVex never exposes
 an option to skip proxy or destination certificate verification.
 
 The execution profiles are:
@@ -229,13 +229,13 @@ inspection; `--intelligence-bytes` changes that cap. Text and JSON assertions
 use bounded processing: ASCII text signatures are matched incrementally without
 retaining the complete body, while JSON and Unicode text assertions retain the
 complete bounded body because they require structured or Unicode-aware inspection.
-`relayprobe doctor` reports the resulting per-worker capture and theoretical
+`netvex doctor` reports the resulting per-worker capture and theoretical
 concurrent upper bound. Configuration validation rejects combinations whose
 worst-case retained response data exceeds the 512 MiB safety budget; reduce
 concurrency or capture size instead of risking process-wide memory exhaustion.
 
 `--concurrency auto` derives a bounded recommendation from CPU count and the
-current file-descriptor limit, capped at 1024. `relayprobe doctor` reports that
+current file-descriptor limit, capped at 1024. `netvex doctor` reports that
 recommendation. It is a safe starting point, not an adaptive claim that more
 workers will improve a particular network.
 
@@ -255,7 +255,7 @@ HTML, or missing JSON fields without adding a bypass mechanism.
 Every configured assertion must resolve and match. Rules are reported by index,
 so potentially sensitive expected values do not enter diagnostics.
 
-RelayProbe records response body bytes, body-read time, and decimal KB/s.
+NetVex records response body bytes, body-read time, and decimal KB/s.
 `--min-response-bytes` verifies that the controlled target returned a meaningful
 payload; `--min-throughput-kbps` qualifies the measured transfer rate. Enforcing
 throughput requires a response of at least 16 KiB. Use a stable, authorized,
@@ -275,7 +275,7 @@ Fewer than two measurements are reported as `insufficient`, avoiding false
 precision.
 
 Compatible JSON echo targets may provide observable exit IP and request-header
-evidence. With an explicit `--baseline-ip`, RelayProbe reports `elite` when the
+evidence. With an explicit `--baseline-ip`, NetVex reports `elite` when the
 exit differs and no proxy header is observed, `anonymous` when proxy evidence is
 present without the baseline IP, and `transparent` when the baseline IP is
 exposed or equals the observed exit. Without a baseline the result remains
@@ -285,7 +285,7 @@ Forwarding evidence stores header names, not potentially sensitive values.
 `--metadata-file` loads a local CIDR CSV or CSV.gz database and performs
 longest-prefix matching without third-party requests. Metadata can include
 country, city, ASN, organization, and an operator-supplied network type such as
-`residential`, `datacenter`, `mobile`, or `isp`. RelayProbe does not infer network
+`residential`, `datacenter`, `mobile`, or `isp`. NetVex does not infer network
 type from organization names. See [metadata](docs/METADATA.md).
 
 `--rotation-samples N` takes enough successful observations to distinguish a
@@ -303,7 +303,7 @@ when the configured target quorum passes. Names let several paths on one origin
 remain distinguishable without persisting sensitive target paths or queries.
 
 ```sh
-relayprobe check --scenario examples/scenario.json --preflight strict proxies.txt
+netvex check --scenario examples/scenario.json --preflight strict proxies.txt
 ```
 
 Preflight checks target health directly before proxy work. `report` records
@@ -313,27 +313,27 @@ bounded reads, and no environment proxy.
 
 ## Configuration
 
-Precedence is command-line flags, `RELAYPROBE_*` environment variables, a JSON
+Precedence is command-line flags, `NETVEX_*` environment variables, a JSON
 configuration file, then built-in defaults.
 
 ```sh
-relayprobe config show
-relayprobe config init
-relayprobe config validate --config ~/.config/relayprobe/config.json
+netvex config show
+netvex config init
+netvex config validate --config ~/.config/netvex/config.json
 ```
 
 Environment configuration covers every persistent engine setting:
 
 | Area | Variables |
 |---|---|
-| Concurrency | `RELAYPROBE_CONCURRENCY`, `RELAYPROBE_QUEUE_SIZE`, `RELAYPROBE_PER_TARGET_CONCURRENCY`, `RELAYPROBE_REQUESTS_PER_SECOND` |
-| Measurements | `RELAYPROBE_REPEAT`, `RELAYPROBE_MIN_SUCCESS_RATE`, `RELAYPROBE_STOP_ON_SUCCESS`, `RELAYPROBE_RETRY_PERMANENT_FAILURES`, `RELAYPROBE_ROTATION_SAMPLES`, `RELAYPROBE_ROTATION_INTERVAL` |
-| Time | `RELAYPROBE_CONNECT_TIMEOUT`, `RELAYPROBE_REQUEST_TIMEOUT`, `RELAYPROBE_AUTO_PROBE_TIMEOUT`, `RELAYPROBE_DNS_CACHE_TTL`, `RELAYPROBE_RETRY_BACKOFF`, `RELAYPROBE_PROGRESS_INTERVAL` |
-| Destinations | `RELAYPROBE_TARGETS`, `RELAYPROBE_ALLOWED_TARGET_HOSTS`, `RELAYPROBE_MAX_REDIRECTS`, `RELAYPROBE_ALLOW_PRIVATE_TARGETS`, `RELAYPROBE_ALLOW_REMOTE_DNS`, `RELAYPROBE_TARGET_MATRIX`, `RELAYPROBE_TARGET_QUORUM`, `RELAYPROBE_PREFLIGHT` |
-| Response qualification | `RELAYPROBE_MIN_RESPONSE_BYTES`, `RELAYPROBE_MIN_THROUGHPUT_KBPS`, `RELAYPROBE_REQUIRE_TEXT`, `RELAYPROBE_REJECT_TEXT`, `RELAYPROBE_EXPECT_JSON`, `RELAYPROBE_EXPECTED_BODY_SHA256`, `RELAYPROBE_ANONYMITY_BASELINE_IP` |
-| TLS trust | `RELAYPROBE_CA_BUNDLE`, `RELAYPROBE_PROXY_CA_BUNDLE` |
-| Resource limits | `RELAYPROBE_MAX_INPUT_BYTES`, `RELAYPROBE_MAX_INPUT_ENTRIES`, `RELAYPROBE_MAX_RESPONSE_BYTES`, `RELAYPROBE_INTELLIGENCE_BODY_BYTES` |
-| Persistence and metadata | `RELAYPROBE_DATA_DIR`, `RELAYPROBE_SAVE`, `RELAYPROBE_METADATA_FILE` |
+| Concurrency | `NETVEX_CONCURRENCY`, `NETVEX_QUEUE_SIZE`, `NETVEX_PER_TARGET_CONCURRENCY`, `NETVEX_REQUESTS_PER_SECOND` |
+| Measurements | `NETVEX_REPEAT`, `NETVEX_MIN_SUCCESS_RATE`, `NETVEX_STOP_ON_SUCCESS`, `NETVEX_RETRY_PERMANENT_FAILURES`, `NETVEX_ROTATION_SAMPLES`, `NETVEX_ROTATION_INTERVAL` |
+| Time | `NETVEX_CONNECT_TIMEOUT`, `NETVEX_REQUEST_TIMEOUT`, `NETVEX_AUTO_PROBE_TIMEOUT`, `NETVEX_DNS_CACHE_TTL`, `NETVEX_RETRY_BACKOFF`, `NETVEX_PROGRESS_INTERVAL` |
+| Destinations | `NETVEX_TARGETS`, `NETVEX_ALLOWED_TARGET_HOSTS`, `NETVEX_MAX_REDIRECTS`, `NETVEX_ALLOW_PRIVATE_TARGETS`, `NETVEX_ALLOW_REMOTE_DNS`, `NETVEX_TARGET_MATRIX`, `NETVEX_TARGET_QUORUM`, `NETVEX_PREFLIGHT` |
+| Response qualification | `NETVEX_MIN_RESPONSE_BYTES`, `NETVEX_MIN_THROUGHPUT_KBPS`, `NETVEX_REQUIRE_TEXT`, `NETVEX_REJECT_TEXT`, `NETVEX_EXPECT_JSON`, `NETVEX_EXPECTED_BODY_SHA256`, `NETVEX_ANONYMITY_BASELINE_IP` |
+| TLS trust | `NETVEX_CA_BUNDLE`, `NETVEX_PROXY_CA_BUNDLE` |
+| Resource limits | `NETVEX_MAX_INPUT_BYTES`, `NETVEX_MAX_INPUT_ENTRIES`, `NETVEX_MAX_RESPONSE_BYTES`, `NETVEX_INTELLIGENCE_BODY_BYTES` |
+| Persistence and metadata | `NETVEX_DATA_DIR`, `NETVEX_SAVE`, `NETVEX_METADATA_FILE` |
 
 List values are comma-separated. Boolean values use Go boolean syntax such as
 `true` or `false`. Invalid environment values stop execution before network
@@ -348,7 +348,7 @@ unless the deliberate `--allow-private-targets` exception is used.
 ## Persistence and exports
 
 `--save` stores private JSONL runs under the platform configuration directory
-(`~/.config/relayprobe/runs` on typical Linux systems). POSIX files use mode
+(`~/.config/netvex/runs` on typical Linux systems). POSIX files use mode
 0600. Results are flushed, synchronized, and atomically renamed. Passwords and
 sensitive target URL components are never persisted. Retention cleanup is
 preview-only until `runs prune --execute` is supplied.
@@ -384,7 +384,7 @@ ASN, network type, pool label, rotation class, and unique-exit count. File
 exports are mode 0600 and atomically committed.
 
 ```sh
-relayprobe export --run latest --status ok --max-latency 400 --min-score 75 --country US --network-type residential --format txt --output us-residential.txt
+netvex export --run latest --status ok --max-latency 400 --min-score 75 --country US --network-type residential --format txt --output us-residential.txt
 ```
 
 ## Status and exit codes
@@ -404,9 +404,9 @@ Statuses are `ok`, `failed`, `timeout`, `auth_failed`, `policy_blocked`,
 ## Shell completion
 
 ```sh
-relayprobe completion bash > ~/.local/share/bash-completion/completions/relayprobe
-relayprobe completion zsh > ~/.local/share/zsh/site-functions/_relayprobe
-relayprobe completion fish > ~/.config/fish/completions/relayprobe.fish
+netvex completion bash > ~/.local/share/bash-completion/completions/netvex
+netvex completion zsh > ~/.local/share/zsh/site-functions/_netvex
+netvex completion fish > ~/.config/fish/completions/netvex.fish
 ```
 
 ## Documentation
@@ -428,11 +428,11 @@ relayprobe completion fish > ~/.config/fish/completions/relayprobe.fish
 
 ## Scope and limitations
 
-RelayProbe validates only explicitly supplied, authorized proxy endpoints. It
+NetVex validates only explicitly supplied, authorized proxy endpoints. It
 does not discover public proxies, scan networks, evade controls, or bypass rate
 limits. SOCKS4 supports IPv4 destinations; SOCKS4a remote resolution is opt-in.
 History is a local single-user JSONL store rather than a multi-user database.
-Windows output files inherit the destination directory ACL; RelayProbe does not
+Windows output files inherit the destination directory ACL; NetVex does not
 rewrite Windows ACLs. Native MMDB and end-to-end HTTP/2 proxy requests are not
 currently implemented; metadata uses the documented offline CSV/gzip format
 and validation requests use HTTP/1.1 after protocol negotiation. Direct
@@ -442,4 +442,4 @@ timeouts, file descriptor limits, and local network conditions.
 
 ## License
 
-RelayProbe is licensed under the [Apache License 2.0](LICENSE).
+NetVex is licensed under the [Apache License 2.0](LICENSE).

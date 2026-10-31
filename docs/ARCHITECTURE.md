@@ -1,6 +1,6 @@
 # Architecture
 
-RelayProbe is a Go single-process, on-demand CLI. It has no daemon, browser UI,
+NetVex is a Go single-process, on-demand CLI. It has no daemon, browser UI,
 HTTP service, plugin execution, or downloaded code path.
 
 Data flow:
@@ -38,6 +38,8 @@ limits global attempt starts without pre-reserving future slots or creating a
 timer goroutine per worker. Context deadlines reach
 dialing, negotiation, TLS, reads, and writes. SIGINT/SIGTERM close active
 connections, cancel production and workers, and return exit 130.
+Socket cancellation uses context callbacks instead of a dedicated waiting
+goroutine and channel for every live connection.
 
 Concurrent destination resolutions are collapsed and safe answers are cached
 for a bounded TTL. Failed lookups are not cached. Permanent policy,

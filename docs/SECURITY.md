@@ -1,6 +1,6 @@
 # Security model
 
-RelayProbe assumes proxy endpoints and validation target names are explicitly
+NetVex assumes proxy endpoints and validation target names are explicitly
 authorized by the operator. It does not discover proxies, scan address ranges,
 evade controls, bypass rate limits, or execute imported content.
 
@@ -66,19 +66,19 @@ credentials for the same protocol/host/port share resume identity. Do not reuse
 one checkpoint when comparing credential variants.
 
 On Windows, generated files inherit the ACL of their containing directory.
-RelayProbe uses native exclusive checkpoint locks, rejects reparse-point-like
+NetVex uses native exclusive checkpoint locks, rejects reparse-point-like
 symbolic links exposed by Go, verifies file identity after opening, and uses
 atomic replace semantics, but it deliberately does not rewrite organization- or
 administrator-managed ACLs. Store credential inputs and outputs in a directory
 whose ACL grants access only to the intended account.
 
-Custom CA bundles extend, rather than replace, the system trust store. RelayProbe
+Custom CA bundles extend, rather than replace, the system trust store. NetVex
 does not expose an insecure TLS mode. Certificate files are bounded before
 parsing, and `doctor` validates configured bundles without making a network
 request.
 
 When a credential-bearing input file is readable by group or other users,
-RelayProbe emits a security warning with the observed mode. It does not change
+NetVex emits a security warning with the observed mode. It does not change
 operator-owned file permissions automatically.
 User-controlled filenames and rejected records are quoted in verbose terminal
 diagnostics so control characters cannot alter terminal or log presentation.
@@ -100,6 +100,6 @@ assertions identify response properties but do not solve, bypass, or interact
 with anti-bot challenges.
 
 Report vulnerabilities according to the repository's private disclosure
-procedure in [SECURITY.md](../SECURITY.md). Include the RelayProbe version,
+procedure in [SECURITY.md](../SECURITY.md). Include the NetVex version,
 affected command, sanitized input, and a minimal reproduction without live
 third-party credentials.

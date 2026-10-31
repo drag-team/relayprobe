@@ -10,7 +10,7 @@ func TestUserAgentCannotInjectHeaders(t *testing.T) {
 	defer func() { Version = old }()
 	Version = "1.2\r\nInjected: yes"
 	got := UserAgent()
-	if strings.ContainsAny(got, "\r\n :") {
+	if !strings.HasPrefix(got, "NetVex/") || strings.ContainsAny(got, "\r\n :") {
 		t.Fatalf("unsafe user agent %q", got)
 	}
 }

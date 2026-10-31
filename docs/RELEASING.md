@@ -1,6 +1,6 @@
 # Release process
 
-RelayProbe releases are created from annotated Semantic Versioning tags on a
+NetVex releases are created from annotated Semantic Versioning tags on a
 clean `main` branch. The release workflow builds static Linux, macOS, Windows,
 and FreeBSD amd64/arm64 archives, generates SHA-256 checksum files, and
 publishes them to GitHub.
@@ -14,8 +14,10 @@ full local gate:
 ```sh
 make clean
 make check
+make cross-check
+make reproducibility-check
 make build
-./bin/relayprobe version
+./bin/netvex version
 git status --short
 ```
 
@@ -32,7 +34,7 @@ following example uses `0.7.0`; replace it with the version in `VERSION`:
 
 ```sh
 version="$(cat VERSION)"
-git tag -a "v${version}" -m "RelayProbe v${version}"
+git tag -a "v${version}" -m "NetVex v${version}"
 make release-check
 git push origin main
 git push origin "v${version}"
@@ -49,10 +51,10 @@ on Linux:
 
 ```sh
 version="0.7.0"
-sha256sum --check "relayprobe-v${version}-linux-amd64.tar.gz.sha256"
-tar -xzf "relayprobe-v${version}-linux-amd64.tar.gz"
-./"relayprobe-v${version}-linux-amd64"/relayprobe version
-./"relayprobe-v${version}-linux-amd64"/relayprobe doctor
+sha256sum --check "netvex-v${version}-linux-amd64.tar.gz.sha256"
+tar -xzf "netvex-v${version}-linux-amd64.tar.gz"
+./"netvex-v${version}-linux-amd64"/netvex version
+./"netvex-v${version}-linux-amd64"/netvex doctor
 ```
 
 Confirm the embedded version, commit, target OS and architecture, license,

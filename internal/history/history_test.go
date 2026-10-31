@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/drag-team/relayprobe/internal/model"
+	"github.com/drag-team/netvex/internal/model"
 )
 
 func TestTrendsAndPoolDiversity(t *testing.T) {

@@ -18,9 +18,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/drag-team/relayprobe/internal/buildinfo"
-	"github.com/drag-team/relayprobe/internal/model"
-	"github.com/drag-team/relayprobe/internal/policy"
+	"github.com/drag-team/netvex/internal/buildinfo"
+	"github.com/drag-team/netvex/internal/model"
+	"github.com/drag-team/netvex/internal/policy"
 )
 
 type Error struct {
@@ -487,19 +487,16 @@ func IsIPLiteral(host string) bool {
 
 type watchedConn struct {
 	net.Conn
-	stop chan struct{}
+	stop func() bool
 	once sync.Once
 }
 
 func watchContext(ctx context.Context, conn net.Conn) net.Conn {
-	w := &watchedConn{Conn: conn, stop: make(chan struct{})}
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = w.Conn.Close()
-		case <-w.stop:
-		}
-	}()
+	w := &watchedConn{Conn: conn}
+	w.stop = context.AfterFunc(ctx, func() { _ = conn.Close() })
 	return w
 }
-func (w *watchedConn) Close() error { w.once.Do(func() { close(w.stop) }); return w.Conn.Close() }
+func (w *watchedConn) Close() error {
+	w.once.Do(func() { w.stop() })
+	return w.Conn.Close()
+}

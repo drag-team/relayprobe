@@ -17,7 +17,7 @@ repository's **Security** tab, select **Advisories**, then select **Report a
 vulnerability**. Do not open a public issue, discussion, or pull request for an
 unresolved vulnerability.
 
-Include the affected RelayProbe version, operating system and architecture,
+Include the affected NetVex version, operating system and architecture,
 the affected command, a minimal reproduction, expected impact, and any known
 mitigations. Remove live proxy credentials, authentication headers, target
 tokens, internal addresses, and unrelated environment data.
@@ -34,5 +34,5 @@ execution, unbounded resource consumption, corrupt history writes, and incorrect
 authentication classification.
 
 The absence of an anonymity signal, the accuracy of third-party geolocation,
-and availability failures in infrastructure outside RelayProbe's control are
+and availability failures in infrastructure outside NetVex's control are
 not security guarantees. See the detailed [security model](docs/SECURITY.md).

@@ -15,8 +15,8 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/drag-team/relayprobe/internal/fsx"
-	"github.com/drag-team/relayprobe/internal/model"
+	"github.com/drag-team/netvex/internal/fsx"
+	"github.com/drag-team/netvex/internal/model"
 )
 
 type RunWriter struct {

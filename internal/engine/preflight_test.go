@@ -8,7 +8,7 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/drag-team/relayprobe/internal/config"
+	"github.com/drag-team/netvex/internal/config"
 )
 
 func TestPreflightUsesPinnedApprovedTarget(t *testing.T) {

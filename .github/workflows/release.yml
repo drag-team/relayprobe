@@ -77,11 +77,12 @@ jobs:
           COMMIT: ${{ github.sha }}
         run: |
           version="${VERSION#v}"
-          package="relayprobe-${VERSION}-${OS}-${ARCH}"
-          binary="relayprobe"
-          if test "${OS}" = windows; then binary="relayprobe.exe"; fi
+          package="netvex-${VERSION}-${OS}-${ARCH}"
+          binary="netvex"
+          if test "${OS}" = windows; then binary="netvex.exe"; fi
           mkdir -p "dist/${package}"
-          CGO_ENABLED=0 GOOS="${OS}" GOARCH="${ARCH}" go build -trimpath -ldflags "-s -w -X github.com/drag-team/relayprobe/internal/buildinfo.Version=${version} -X github.com/drag-team/relayprobe/internal/buildinfo.Commit=${COMMIT} -X github.com/drag-team/relayprobe/internal/buildinfo.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "dist/${package}/${binary}" ./cmd/relayprobe
+          build_date="$(git show -s --format=%cI HEAD)"
+          CGO_ENABLED=0 GOOS="${OS}" GOARCH="${ARCH}" go build -mod=readonly -trimpath -buildvcs=false -ldflags "-s -w -X github.com/drag-team/netvex/internal/buildinfo.Version=${version} -X github.com/drag-team/netvex/internal/buildinfo.Commit=${COMMIT} -X github.com/drag-team/netvex/internal/buildinfo.Date=${build_date}" -o "dist/${package}/${binary}" ./cmd/netvex
           cp README.md LICENSE CHANGELOG.md "dist/${package}/"
           if test "${FORMAT}" = zip; then
             cd dist
@@ -93,7 +94,7 @@ jobs:
           sha256sum "${package}.${FORMAT}" > "${package}.${FORMAT}.sha256"
       - uses: actions/upload-artifact@v4
         with:
-          name: relayprobe-${{ matrix.os }}-${{ matrix.arch }}
+          name: netvex-${{ matrix.os }}-${{ matrix.arch }}
           path: |
             dist/*.tar.gz
             dist/*.zip
@@ -113,4 +114,4 @@ jobs:
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" dist/* --verify-tag --generate-notes --title "RelayProbe ${GITHUB_REF_NAME}"
+        run: gh release create "${GITHUB_REF_NAME}" dist/* --verify-tag --generate-notes --title "NetVex ${GITHUB_REF_NAME}"

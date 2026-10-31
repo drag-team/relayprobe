@@ -1,6 +1,6 @@
 # Roadmap
 
-RelayProbe prioritizes correctness, bounded resource use, and defensible network
+NetVex prioritizes correctness, bounded resource use, and defensible network
 security over protocol breadth. The roadmap is intentionally outcome-oriented;
 it is not a promise that every item will ship unchanged.
 
