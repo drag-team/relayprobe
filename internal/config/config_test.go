@@ -48,6 +48,42 @@ func TestConfigValidation(t *testing.T) {
 	if err := c.Validate(); err == nil {
 		t.Fatal("accepted invalid JSON assertion")
 	}
+	c = Defaults()
+	c.IntelligenceBytes = 0
+	if err := c.Validate(); err == nil {
+		t.Fatal("accepted zero intelligence capture limit")
+	}
+	c = Defaults()
+	c.AutoProbeTimeout = 0
+	if err := c.Validate(); err == nil {
+		t.Fatal("accepted zero auto probe timeout")
+	}
+	c = Defaults()
+	c.Concurrency = 1024
+	c.IntelligenceBytes = 1 << 20
+	if err := c.Validate(); err == nil {
+		t.Fatal("accepted excessive concurrent capture budget")
+	}
+}
+
+func TestResponseCaptureLimitIncludesTargetAssertions(t *testing.T) {
+	c := Defaults()
+	c.IntelligenceBytes = 1024
+	if got := c.ResponseCaptureLimit(); got != 1024 {
+		t.Fatalf("ordinary capture=%d", got)
+	}
+	c.TargetRules = map[string]ResponseRules{"https://example.com/": {ExpectJSON: []string{"status=ok"}}}
+	if got := c.ResponseCaptureLimit(); got != c.MaxResponseBytes {
+		t.Fatalf("assertion capture=%d want=%d", got, c.MaxResponseBytes)
+	}
+	c.TargetRules = map[string]ResponseRules{"https://example.com/": {RequireText: []string{"access denied"}}}
+	if got := c.ResponseCaptureLimit(); got != 1024 {
+		t.Fatalf("streaming text assertion capture=%d", got)
+	}
+	c.TargetRules = map[string]ResponseRules{"https://example.com/": {RequireText: []string{"café"}}}
+	if got := c.ResponseCaptureLimit(); got != c.MaxResponseBytes {
+		t.Fatalf("Unicode text assertion capture=%d want=%d", got, c.MaxResponseBytes)
+	}
 }
 func TestLoadPrecedenceEnvironment(t *testing.T) {
 	d := t.TempDir()
@@ -94,6 +130,7 @@ func TestCompleteEnvironmentConfiguration(t *testing.T) {
 		"RELAYPROBE_MAX_INPUT_BYTES":          "4096",
 		"RELAYPROBE_MAX_INPUT_ENTRIES":        "1234",
 		"RELAYPROBE_MAX_RESPONSE_BYTES":       "2048",
+		"RELAYPROBE_INTELLIGENCE_BODY_BYTES":  "1536",
 		"RELAYPROBE_MIN_RESPONSE_BYTES":       "1024",
 		"RELAYPROBE_MIN_THROUGHPUT_KBPS":      "0",
 		"RELAYPROBE_ALLOW_PRIVATE_TARGETS":    "true",
@@ -104,6 +141,7 @@ func TestCompleteEnvironmentConfiguration(t *testing.T) {
 		"RELAYPROBE_TARGETS":                  "https://one.test/, http://two.test/",
 		"RELAYPROBE_ALLOWED_TARGET_HOSTS":     "one.test, two.test",
 		"RELAYPROBE_PROGRESS_INTERVAL":        "750ms",
+		"RELAYPROBE_AUTO_PROBE_TIMEOUT":       "1500ms",
 		"RELAYPROBE_ANONYMITY_BASELINE_IP":    "198.51.100.10",
 		"RELAYPROBE_METADATA_FILE":            "/tmp/relayprobe-metadata.csv",
 		"RELAYPROBE_REQUIRE_TEXT":             "expected marker,application/json",
@@ -128,7 +166,7 @@ func TestCompleteEnvironmentConfiguration(t *testing.T) {
 	if c.Concurrency != 9 || c.QueueSize != 18 || c.PerTarget != 3 || c.RateLimit != 12.5 || c.Repeat != 4 || c.MinSuccessRate != 0.75 {
 		t.Fatalf("numeric environment not applied: %+v", c)
 	}
-	if c.MaxRedirects != 1 || c.MaxInputBytes != 4096 || c.MaxInputEntries != 1234 || c.MaxResponseBytes != 2048 || c.MinResponseBytes != 1024 || c.ProgressInterval != 750*time.Millisecond {
+	if c.MaxRedirects != 1 || c.MaxInputBytes != 4096 || c.MaxInputEntries != 1234 || c.MaxResponseBytes != 2048 || c.IntelligenceBytes != 1536 || c.MinResponseBytes != 1024 || c.ProgressInterval != 750*time.Millisecond || c.AutoProbeTimeout != 1500*time.Millisecond {
 		t.Fatalf("limits not applied: %+v", c)
 	}
 	if !c.AllowPrivate || !c.AllowRemoteDNS || !c.RetryPermanent || !c.StopOnSuccess || !c.Save {

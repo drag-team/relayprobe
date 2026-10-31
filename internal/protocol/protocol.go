@@ -435,14 +435,26 @@ func classifyNet(stage model.Stage, code string, err error) error {
 		code = "deadline_exceeded"
 	} else if errors.Is(err, syscall.ECONNREFUSED) {
 		code = "connection_refused"
+	} else if errors.Is(err, syscall.ECONNRESET) {
+		code = "connection_reset"
+	} else if errors.Is(err, syscall.EPIPE) {
+		code = "broken_pipe"
 	} else if errors.Is(err, syscall.ENETUNREACH) {
 		code = "network_unreachable"
 	} else if errors.Is(err, syscall.EHOSTUNREACH) {
 		code = "host_unreachable"
+	} else if errors.Is(err, syscall.ETIMEDOUT) {
+		status = model.StatusTimeout
+		code = "network_timeout"
+	} else if errors.Is(err, net.ErrClosed) {
+		code = "connection_closed"
+	} else if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		code = "unexpected_eof"
 	}
 	var ne net.Error
 	if status == model.StatusFailed && errors.As(err, &ne) && ne.Timeout() {
 		status = model.StatusTimeout
+		code = "network_timeout"
 	}
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {

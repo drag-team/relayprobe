@@ -140,14 +140,16 @@ type checkOptions struct {
 	configPath, profile, format, inputFormat, protocol, color   string
 	concurrency                                                 string
 	queueSize, perTarget, repeat, maxInputEntries               int
-	connectTimeout, requestTimeout, dnsCacheTTL, retryBackoff   string
+	connectTimeout, requestTimeout, autoProbeTimeout            string
+	dnsCacheTTL, retryBackoff                                   string
 	progressInterval                                            string
 	targets, allowHosts, requireText, rejectText, expectJSON    stringsFlag
 	allowPrivate, allowRemoteDNS, save, requireSuccess, verbose bool
 	dataDir                                                     string
 	maxRedirects                                                int
 	requireCount                                                int
-	minResponseBytes, maxResponseBytes, maxInputBytes           int64
+	minResponseBytes, maxResponseBytes, intelligenceBytes       int64
+	maxInputBytes                                               int64
 	rate, minSuccessRate, minThroughput                         float64
 	baselineIP, metadataFile, expectedBodySHA                   string
 	caBundle, proxyCABundle, scenarioPath, label                string
@@ -204,6 +206,7 @@ func (c CLI) addCheckFlags(fs *flag.FlagSet, o *checkOptions) {
 	fs.Int64Var(&o.maxInputBytes, "max-input-bytes", -1, "maximum aggregate decompressed input bytes")
 	fs.IntVar(&o.maxInputEntries, "max-input-entries", -1, "maximum aggregate input records")
 	fs.Int64Var(&o.maxResponseBytes, "max-response-bytes", -1, "maximum response body bytes per attempt")
+	fs.Int64Var(&o.intelligenceBytes, "intelligence-bytes", -1, "maximum response bytes retained for exit-IP intelligence")
 	fs.Float64Var(&o.minSuccessRate, "min-success-rate", -1, "minimum successful measurement ratio (0..1]")
 	fs.Int64Var(&o.minResponseBytes, "min-response-bytes", -1, "minimum response body size for a successful measurement")
 	fs.Float64Var(&o.minThroughput, "min-throughput-kbps", -1, "minimum measured response-body throughput in decimal KB/s")
@@ -224,6 +227,7 @@ func (c CLI) addCheckFlags(fs *flag.FlagSet, o *checkOptions) {
 	fs.StringVar(&o.preflight, "preflight", "", "direct target health check: off, report, or strict")
 	fs.StringVar(&o.connectTimeout, "connect-timeout", "", "TCP connect timeout")
 	fs.StringVar(&o.requestTimeout, "request-timeout", "", "overall attempt timeout")
+	fs.StringVar(&o.autoProbeTimeout, "auto-probe-timeout", "", "maximum time for each protocol candidate in auto mode")
 	fs.StringVar(&o.dnsCacheTTL, "dns-cache-ttl", "", "cache approved target DNS answers (0 disables)")
 	fs.StringVar(&o.retryBackoff, "retry-backoff", "", "initial exponential backoff after transient failure")
 	fs.StringVar(&o.progressInterval, "progress-interval", "", "verbose progress refresh interval (50ms..1m)")
@@ -308,6 +312,9 @@ func (c CLI) loadCheck(o checkOptions) (config.Config, model.Protocol, output.Fo
 	if o.maxResponseBytes > 0 || o.explicit["max-response-bytes"] {
 		cfg.MaxResponseBytes = o.maxResponseBytes
 	}
+	if o.intelligenceBytes > 0 || o.explicit["intelligence-bytes"] {
+		cfg.IntelligenceBytes = o.intelligenceBytes
+	}
 	if o.minSuccessRate != -1 && o.minSuccessRate != 0 {
 		cfg.MinSuccessRate = o.minSuccessRate
 	}
@@ -361,6 +368,9 @@ func (c CLI) loadCheck(o checkOptions) (config.Config, model.Protocol, output.Fo
 	}
 	if o.requestTimeout != "" {
 		cfg.RequestTimeoutRaw = o.requestTimeout
+	}
+	if o.autoProbeTimeout != "" {
+		cfg.AutoProbeRaw = o.autoProbeTimeout
 	}
 	if o.dnsCacheTTL != "" {
 		cfg.DNSCacheTTLRaw = o.dnsCacheTTL
@@ -1084,10 +1094,10 @@ func runConfiguration(cfg config.Config, proto model.Protocol, o checkOptions) m
 	return model.RunConfiguration{
 		Profile: o.profile, Protocol: proto, Concurrency: cfg.Concurrency,
 		QueueSize: cfg.QueueSize, PerTarget: cfg.PerTarget, RateLimit: cfg.RateLimit,
-		Repeat: cfg.Repeat, MinSuccessRate: cfg.MinSuccessRate, ConnectTimeout: cfg.ConnectTimeout.String(), RequestTimeout: cfg.RequestTimeout.String(),
+		Repeat: cfg.Repeat, MinSuccessRate: cfg.MinSuccessRate, ConnectTimeout: cfg.ConnectTimeout.String(), RequestTimeout: cfg.RequestTimeout.String(), AutoProbeTimeout: cfg.AutoProbeTimeout.String(),
 		RetryBackoff: cfg.RetryBackoff.String(), StopOnSuccess: cfg.StopOnSuccess,
 		RetryPermanent: cfg.RetryPermanent, AllowRemoteDNS: cfg.AllowRemoteDNS,
-		MaxResponseBytes: cfg.MaxResponseBytes, MinResponseBytes: cfg.MinResponseBytes, MinThroughput: cfg.MinThroughputKBPS,
+		MaxResponseBytes: cfg.MaxResponseBytes, IntelligenceBytes: min(cfg.IntelligenceBytes, cfg.MaxResponseBytes), MinResponseBytes: cfg.MinResponseBytes, MinThroughput: cfg.MinThroughputKBPS,
 		ContentRules:    len(cfg.RequireText) + len(cfg.RejectText) + len(cfg.ExpectJSON),
 		MetadataEnabled: cfg.MetadataFile != "",
 		TargetMatrix:    cfg.TargetMatrix, TargetQuorum: cfg.TargetQuorum,
@@ -2044,6 +2054,9 @@ func (c CLI) doctor(args []string) int {
 			}
 		}
 		fmt.Fprintf(c.Stdout, "auto workers   OK  recommended=%d\n", recommendedConcurrency())
+		captureLimit := cfg.ResponseCaptureLimit()
+		upperBound := captureLimit * int64(cfg.Concurrency)
+		fmt.Fprintf(c.Stdout, "body capture   OK  per_worker=%d upper_bound=%d budget=%d\n", captureLimit, upperBound, config.MaxConcurrentCaptureBytes)
 	}
 	if d, err := os.MkdirTemp("", "relayprobe-doctor-"); err == nil {
 		_ = os.Remove(d)
@@ -2087,7 +2100,13 @@ func (c CLI) completion(args []string) int {
 		return ExitUsage
 	}
 	commands := "check inspect import results runs export stats history pool shard merge explore config doctor bench completion version help"
-	checkFlags := "--profile --format --input-format --protocol --concurrency --queue-size --per-target --rate --repeat --max-input-bytes --max-input-entries --max-response-bytes --min-success-rate --min-response-bytes --min-throughput-kbps --require-text --reject-text --expect-json --expect-sha256 --baseline-ip --metadata-file --ca-bundle --proxy-ca-bundle --scenario --label --target-matrix --target-quorum --rotation-samples --rotation-interval --preflight --connect-timeout --request-timeout --dns-cache-ttl --retry-backoff --progress-interval --target --allow-host --allow-private-targets --allow-remote-dns --retry-permanent --stop-on-success --no-deduplicate --quiet --output-status --working-output --summary-output --checkpoint --resume --checkpoint-sync --policy --junit-output --force --save --data-dir --max-redirects --require-success --require-count --verbose --plain --color --config --help"
+	fs, _ := c.newFlagSet("completion-check")
+	var options checkOptions
+	c.addCheckFlags(fs, &options)
+	flagNames := []string{"--help"}
+	fs.VisitAll(func(option *flag.Flag) { flagNames = append(flagNames, "--"+option.Name) })
+	sort.Strings(flagNames)
+	checkFlags := strings.Join(flagNames, " ")
 	switch args[0] {
 	case "bash":
 		fmt.Fprintf(c.Stdout, `_relayprobe() {

@@ -441,8 +441,13 @@ func TestNetworkErrorClassification(t *testing.T) {
 	}{
 		{context.Canceled, model.StatusInterrupted, "interrupted"},
 		{syscall.ECONNREFUSED, model.StatusFailed, "connection_refused"},
+		{syscall.ECONNRESET, model.StatusFailed, "connection_reset"},
+		{syscall.EPIPE, model.StatusFailed, "broken_pipe"},
 		{syscall.ENETUNREACH, model.StatusFailed, "network_unreachable"},
 		{syscall.EHOSTUNREACH, model.StatusFailed, "host_unreachable"},
+		{syscall.ETIMEDOUT, model.StatusTimeout, "network_timeout"},
+		{net.ErrClosed, model.StatusFailed, "connection_closed"},
+		{io.ErrUnexpectedEOF, model.StatusFailed, "unexpected_eof"},
 	}
 	for _, tc := range tests {
 		var pe *Error

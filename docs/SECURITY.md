@@ -20,6 +20,11 @@ Default safeguards:
 - independent certificate validation for HTTPS proxies and HTTPS destinations;
 - overall, connect, input, line, response, concurrency, repeat, redirect, and
   target-count, URL-size, sorting and queue limits, plus a 64 KiB status/header limit;
+- streaming response hashing, streaming ASCII content matching, and a separately
+  bounded intelligence-body capture, with full bounded capture only for JSON or
+  Unicode content assertions;
+- a 512 MiB worst-case concurrent response-capture budget enforced before any
+  network operation;
 - one aggregate decompressed-byte budget across all plain and gzip input sources;
 - proxy usernames and passwords redacted from ordinary output and omitted from history;
 - redacted `***` passwords rejected when diagnostic output is re-imported;

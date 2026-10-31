@@ -48,6 +48,7 @@ type Checker struct {
 	expectJSON      []jsonExpectation
 	Label           string
 	targetRules     map[string]compiledResponseRules
+	effectiveRules  map[string]compiledResponseRules
 	targetNames     map[string]string
 	expectedTargets []string
 }
@@ -66,6 +67,168 @@ type compiledResponseRules struct {
 	rejectText        []string
 	expectJSON        []jsonExpectation
 	expectedBodySHA   string
+	textPlan          *textMatchPlan
+}
+
+const responseReadBufferSize = 32 << 10
+
+var responseReadBuffers = sync.Pool{New: func() any {
+	buffer := make([]byte, responseReadBufferSize)
+	return &buffer
+}}
+
+type cappedCapture struct {
+	buffer bytes.Buffer
+	limit  int64
+}
+
+func (c *cappedCapture) Write(value []byte) (int, error) {
+	written := len(value)
+	remaining := c.limit - int64(c.buffer.Len())
+	if remaining <= 0 {
+		return written, nil
+	}
+	if int64(len(value)) > remaining {
+		value = value[:remaining]
+	}
+	_, _ = c.buffer.Write(value)
+	return written, nil
+}
+
+func readBodyEvidence(reader io.Reader, maxBytes, captureBytes, expectedBytes int64, evidence io.Writer) ([]byte, int64, string, error) {
+	if captureBytes > maxBytes+1 {
+		captureBytes = maxBytes + 1
+	}
+	capture := cappedCapture{limit: captureBytes}
+	if expectedBytes > 0 {
+		growth := min(expectedBytes, captureBytes)
+		if growth <= int64(^uint(0)>>1) {
+			capture.buffer.Grow(int(growth))
+		}
+	}
+	digest := sha256.New()
+	buffer := responseReadBuffers.Get().(*[]byte)
+	writers := []io.Writer{digest, &capture}
+	if evidence != nil {
+		writers = append(writers, evidence)
+	}
+	n, err := io.CopyBuffer(io.MultiWriter(writers...), io.LimitReader(reader, maxBytes+1), *buffer)
+	responseReadBuffers.Put(buffer)
+	return capture.buffer.Bytes(), n, hex.EncodeToString(digest.Sum(nil)), err
+}
+
+type textMatchPlan struct {
+	patterns  []textPattern
+	maxLength int
+}
+
+type textPattern struct {
+	value  []byte
+	anchor int
+}
+
+type textMatcher struct {
+	plan    *textMatchPlan
+	found   []bool
+	tail    []byte
+	scratch []byte
+}
+
+func compileTextMatchPlan(required, rejected []string) *textMatchPlan {
+	patterns := append(append([]string{}, required...), rejected...)
+	if len(patterns) == 0 {
+		return nil
+	}
+	for _, pattern := range patterns {
+		for index := range len(pattern) {
+			if pattern[index] >= 0x80 {
+				return nil
+			}
+		}
+	}
+	plan := &textMatchPlan{patterns: make([]textPattern, len(patterns))}
+	for index, pattern := range patterns {
+		value := []byte(pattern)
+		plan.patterns[index] = textPattern{value: value, anchor: textPatternAnchor(value)}
+		if len(pattern) > plan.maxLength {
+			plan.maxLength = len(pattern)
+		}
+	}
+	return plan
+}
+
+func (p *textMatchPlan) matcher() *textMatcher {
+	if p == nil {
+		return nil
+	}
+	return &textMatcher{plan: p, found: make([]bool, len(p.patterns)), tail: make([]byte, 0, p.maxLength-1)}
+}
+
+func (m *textMatcher) Write(value []byte) (int, error) {
+	length := len(m.tail) + len(value)
+	if cap(m.scratch) < length {
+		m.scratch = make([]byte, length)
+	} else {
+		m.scratch = m.scratch[:length]
+	}
+	copy(m.scratch, m.tail)
+	copy(m.scratch[len(m.tail):], value)
+	for index, pattern := range m.plan.patterns {
+		if !m.found[index] && containsASCIIFold(m.scratch, pattern) {
+			m.found[index] = true
+		}
+	}
+	tailLength := min(m.plan.maxLength-1, len(m.scratch))
+	m.tail = append(m.tail[:0], m.scratch[len(m.scratch)-tailLength:]...)
+	return len(value), nil
+}
+
+func textPatternAnchor(pattern []byte) int {
+	// Prefer a less common ASCII byte when possible. The matcher only uses the
+	// anchor to locate candidates; EqualFold still verifies the full pattern.
+	best, bestRank := 0, 0
+	for index, value := range pattern {
+		rank := strings.IndexByte("etaoinshrdlucmfwypvbgkjqxz", asciiLower(value))
+		if rank > bestRank {
+			best, bestRank = index, rank
+		}
+	}
+	return best
+}
+
+func containsASCIIFold(data []byte, pattern textPattern) bool {
+	anchor := pattern.value[pattern.anchor]
+	if containsAnchoredFold(data, pattern.value, pattern.anchor, anchor) {
+		return true
+	}
+	upper := anchor
+	if anchor >= 'a' && anchor <= 'z' {
+		upper = anchor - ('a' - 'A')
+	}
+	return upper != anchor && containsAnchoredFold(data, pattern.value, pattern.anchor, upper)
+}
+
+func containsAnchoredFold(data, pattern []byte, anchor int, character byte) bool {
+	for offset := 0; offset < len(data); {
+		index := bytes.IndexByte(data[offset:], character)
+		if index < 0 {
+			return false
+		}
+		position := offset + index
+		start := position - anchor
+		if start >= 0 && start+len(pattern) <= len(data) && bytes.EqualFold(data[start:start+len(pattern)], pattern) {
+			return true
+		}
+		offset = position + 1
+	}
+	return false
+}
+
+func asciiLower(value byte) byte {
+	if value >= 'A' && value <= 'Z' {
+		return value + ('a' - 'A')
+	}
+	return value
 }
 
 type MetadataLookup interface {
@@ -81,7 +244,7 @@ type resolveEntry struct {
 
 func NewChecker(c config.Config) *Checker {
 	baseline, _ := netip.ParseAddr(c.AnonymityBaseline)
-	checker := &Checker{Config: c, Policy: policy.New(c.AllowPrivate, c.AllowedHosts), Connector: protocol.Connector{ConnectTimeout: c.ConnectTimeout, AllowRemoteDNS: c.AllowRemoteDNS}, targetSem: make(map[string]chan struct{}), resolved: make(map[string]*resolveEntry), baseline: baseline.Unmap(), targetRules: make(map[string]compiledResponseRules), targetNames: make(map[string]string, len(c.Targets)), expectedTargets: make([]string, 0, len(c.Targets))}
+	checker := &Checker{Config: c, Policy: policy.New(c.AllowPrivate, c.AllowedHosts), Connector: protocol.Connector{ConnectTimeout: c.ConnectTimeout, AllowRemoteDNS: c.AllowRemoteDNS}, targetSem: make(map[string]chan struct{}), resolved: make(map[string]*resolveEntry), baseline: baseline.Unmap(), targetRules: make(map[string]compiledResponseRules), effectiveRules: make(map[string]compiledResponseRules, len(c.Targets)), targetNames: make(map[string]string, len(c.Targets)), expectedTargets: make([]string, 0, len(c.Targets))}
 	for _, rule := range c.RequireText {
 		checker.requireText = append(checker.requireText, strings.ToLower(rule))
 	}
@@ -102,6 +265,9 @@ func NewChecker(c config.Config) *Checker {
 		}
 		checker.targetNames[target] = name
 		checker.expectedTargets = append(checker.expectedTargets, name)
+	}
+	for _, target := range c.Targets {
+		checker.effectiveRules[target] = checker.buildRules(target)
 	}
 	return checker
 }
@@ -125,7 +291,7 @@ func compileResponseRules(rules config.ResponseRules) compiledResponseRules {
 	return compiled
 }
 
-func (c *Checker) rulesFor(target string) compiledResponseRules {
+func (c *Checker) buildRules(target string) compiledResponseRules {
 	rules := compiledResponseRules{
 		minHTTPStatus: 200, maxHTTPStatus: 399,
 		minResponseBytes: c.Config.MinResponseBytes, minThroughputKBPS: c.Config.MinThroughputKBPS,
@@ -152,7 +318,15 @@ func (c *Checker) rulesFor(target string) compiledResponseRules {
 		rules.rejectText = append(append([]string{}, rules.rejectText...), targetRules.rejectText...)
 		rules.expectJSON = append(append([]jsonExpectation{}, rules.expectJSON...), targetRules.expectJSON...)
 	}
+	rules.textPlan = compileTextMatchPlan(rules.requireText, rules.rejectText)
 	return rules
+}
+
+func (c *Checker) rulesFor(target string) compiledResponseRules {
+	if rules, ok := c.effectiveRules[target]; ok {
+		return rules
+	}
+	return c.buildRules(target)
 }
 
 func (c *Checker) Check(ctx context.Context, p model.Proxy) model.Result {
@@ -313,20 +487,38 @@ func (c *Checker) attempt(parent context.Context, p model.Proxy, target string, 
 	defer release()
 	protos := []model.Protocol{p.Protocol}
 	if p.Protocol == model.ProtocolAuto {
-		protos = []model.Protocol{model.ProtocolHTTP, model.ProtocolHTTPS, model.ProtocolSOCKS5, model.ProtocolSOCKS4}
-		if c.Config.AllowRemoteDNS {
-			protos = append(protos, model.ProtocolSOCKS4A)
-		}
+		protos = autoProtocols(p.Port, c.Config.AllowRemoteDNS)
 	}
 	var best error
 	bestProtocol := p.Protocol
 	bestObservation := obs
 	rules := c.rulesFor(target)
-	for _, protoName := range protos {
+	for index, protoName := range protos {
 		candidate := p
 		candidate.Protocol = protoName
 		obs.Protocol = protoName
-		got, e := c.request(ctx, candidate, destinationForProtocol(dest, protoName), rules)
+		candidateCtx := ctx
+		cancelCandidate := func() {}
+		if p.Protocol == model.ProtocolAuto {
+			budget := c.Config.AutoProbeTimeout
+			if deadline, ok := ctx.Deadline(); ok {
+				fairShare := time.Until(deadline) / time.Duration(len(protos)-index)
+				if fairShare < budget {
+					budget = fairShare
+				}
+			}
+			if budget <= 0 {
+				best = &protocol.Error{Stage: model.StageConnect, Status: model.StatusTimeout, Code: "attempt_timeout", Detail: "overall validation attempt timed out", Err: context.DeadlineExceeded}
+				break
+			}
+			candidateCtx, cancelCandidate = context.WithTimeout(ctx, budget)
+		}
+		got, e := c.request(candidateCtx, candidate, destinationForProtocol(dest, protoName), rules)
+		candidateErr := candidateCtx.Err()
+		cancelCandidate()
+		if p.Protocol == model.ProtocolAuto && ctx.Err() == nil && errors.Is(candidateErr, context.DeadlineExceeded) {
+			e = &protocol.Error{Stage: got.Stage, Status: model.StatusTimeout, Code: "auto_probe_timeout", Detail: "protocol candidate exceeded the auto-detection time budget", Err: candidateErr}
+		}
 		got.Attempt = n
 		got.StartedAt = obs.StartedAt
 		got.Target = obs.Target
@@ -341,13 +533,38 @@ func (c *Checker) attempt(parent context.Context, p model.Proxy, target string, 
 			bestObservation = got
 		}
 		if ctx.Err() != nil {
-			best = ctx.Err()
+			code, detail := "attempt_timeout", "overall validation attempt timed out"
+			if errors.Is(ctx.Err(), context.Canceled) {
+				code, detail = "interrupted", "validation attempt was interrupted"
+			}
+			stage := got.Stage
+			if stage == "" {
+				stage = model.StageConnect
+			}
+			best = &protocol.Error{Stage: stage, Status: statusFor(ctx.Err()), Code: code, Detail: detail, Err: ctx.Err()}
 			bestProtocol = protoName
+			bestObservation = got
 			break
 		}
 	}
 	bestObservation.Protocol = bestProtocol
 	return finishError(bestObservation, start, best)
+}
+
+func autoProtocols(port uint16, remoteDNS bool) []model.Protocol {
+	var protocols []model.Protocol
+	switch port {
+	case 1080, 1081, 1085, 9050, 9150:
+		protocols = []model.Protocol{model.ProtocolSOCKS5, model.ProtocolSOCKS4, model.ProtocolHTTP, model.ProtocolHTTPS}
+	case 443, 8443, 9443:
+		protocols = []model.Protocol{model.ProtocolHTTPS, model.ProtocolHTTP, model.ProtocolSOCKS5, model.ProtocolSOCKS4}
+	default:
+		protocols = []model.Protocol{model.ProtocolHTTP, model.ProtocolHTTPS, model.ProtocolSOCKS5, model.ProtocolSOCKS4}
+	}
+	if remoteDNS {
+		protocols = append(protocols, model.ProtocolSOCKS4A)
+	}
+	return protocols
 }
 
 func targetOrigin(raw string) string {
@@ -549,26 +766,37 @@ func (c *Checker) requestWithRedirects(ctx context.Context, p model.Proxy, dest 
 		return c.followRedirect(ctx, p, loc, redirectsLeft-1, obs, rules)
 	}
 	bodyStart := time.Now()
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, c.Config.MaxResponseBytes+1))
+	captureBytes := min(c.Config.IntelligenceBytes, c.Config.MaxResponseBytes)
+	if len(rules.expectJSON) > 0 || (rules.textPlan == nil && (len(rules.requireText) > 0 || len(rules.rejectText) > 0)) {
+		captureBytes = c.Config.MaxResponseBytes + 1
+	}
+	bodyMatcher := rules.textPlan.matcher()
+	var textEvidence io.Writer
+	if bodyMatcher != nil {
+		textEvidence = bodyMatcher
+	}
+	body, bodyBytes, bodySHA, readErr := readBodyEvidence(resp.Body, c.Config.MaxResponseBytes, captureBytes, resp.ContentLength, textEvidence)
 	bodyDuration := time.Since(bodyStart)
 	obs.Timings.BodyMS = ms(bodyDuration)
-	obs.BodyBytes = int64(len(body))
-	bodyDigest := sha256.Sum256(body)
-	obs.BodySHA256 = hex.EncodeToString(bodyDigest[:])
+	obs.BodyBytes = bodyBytes
+	bodyComplete := int64(len(body)) == bodyBytes
+	if !bodyComplete {
+		obs.BodyCapturedBytes = int64(len(body))
+	}
+	obs.BodySHA256 = bodySHA
 	if obs.BodyBytes > 0 && bodyDuration > 0 {
 		obs.ThroughputKBPS = float64(obs.BodyBytes) / 1000 / bodyDuration.Seconds()
 	}
 	if readErr != nil {
 		return obs, &protocol.Error{Stage: model.StageResponse, Status: statusFor(readErr), Code: "body_read", Detail: "failed to read response body", Err: readErr}
 	}
-	if int64(len(body)) > c.Config.MaxResponseBytes {
+	if obs.BodyBytes > c.Config.MaxResponseBytes {
 		return obs, &protocol.Error{Stage: model.StageResponse, Status: model.StatusFailed, Code: "response_too_large", Detail: "response exceeded configured byte limit"}
 	}
 	if resp.StatusCode < rules.minHTTPStatus || resp.StatusCode > rules.maxHTTPStatus {
 		return obs, &protocol.Error{Stage: model.StageResponse, Status: model.StatusInconclusive, Code: "http_status", Detail: fmt.Sprintf("destination returned HTTP status %d", resp.StatusCode)}
 	}
 	if len(rules.requireText) > 0 || len(rules.rejectText) > 0 {
-		bodyLower := bytes.ToLower(body)
 		var headerText strings.Builder
 		headerText.Grow(1024)
 		for name, values := range resp.Header {
@@ -578,13 +806,32 @@ func (c *Checker) requestWithRedirects(ctx context.Context, p model.Proxy, dest 
 			headerText.WriteString(strings.ToLower(strings.Join(values, ",")))
 		}
 		headersLower := headerText.String()
+		var headerMatches []bool
+		if rules.textPlan != nil {
+			headerMatcher := rules.textPlan.matcher()
+			_, _ = headerMatcher.Write([]byte(headersLower))
+			headerMatches = headerMatcher.found
+		}
+		var bodyLower []byte
+		if rules.textPlan == nil {
+			bodyLower = bytes.ToLower(body)
+		}
 		for i, required := range rules.requireText {
-			if !bytes.Contains(bodyLower, []byte(required)) && !strings.Contains(headersLower, required) {
+			matched := rules.textPlan != nil && (bodyMatcher.found[i] || headerMatches[i])
+			if rules.textPlan == nil {
+				matched = bytes.Contains(bodyLower, []byte(required)) || strings.Contains(headersLower, required)
+			}
+			if !matched {
 				return obs, &protocol.Error{Stage: model.StageResponse, Status: model.StatusFailed, Code: "required_content_missing", Detail: fmt.Sprintf("response did not satisfy required content rule %d", i+1)}
 			}
 		}
 		for i, rejected := range rules.rejectText {
-			if bytes.Contains(bodyLower, []byte(rejected)) || strings.Contains(headersLower, rejected) {
+			patternIndex := len(rules.requireText) + i
+			matched := rules.textPlan != nil && (bodyMatcher.found[patternIndex] || headerMatches[patternIndex])
+			if rules.textPlan == nil {
+				matched = bytes.Contains(bodyLower, []byte(rejected)) || strings.Contains(headersLower, rejected)
+			}
+			if matched {
 				return obs, &protocol.Error{Stage: model.StageResponse, Status: model.StatusFailed, Code: "rejected_content_present", Detail: fmt.Sprintf("response matched rejected content rule %d", i+1)}
 			}
 		}
@@ -616,7 +863,9 @@ func (c *Checker) requestWithRedirects(ctx context.Context, p model.Proxy, dest 
 	}
 	obs.Status = model.StatusOK
 	obs.Stage = model.StageComplete
-	obs.ExitIP, obs.Anonymity, obs.ForwardingEvidence = extractIntelligence(body, c.baseline)
+	if bodyComplete {
+		obs.ExitIP, obs.Anonymity, obs.ForwardingEvidence = extractIntelligence(body, c.baseline)
+	}
 	if c.Metadata != nil && obs.ExitIP != "" {
 		if metadata, ok := c.Metadata.Lookup(obs.ExitIP); ok {
 			obs.Metadata = &metadata

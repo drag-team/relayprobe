@@ -8,6 +8,10 @@ All notable changes to RelayProbe are documented in this file. The project uses
 
 ### Added
 
+- Streaming multi-pattern response matching for ASCII content assertions,
+  avoiding full-body retention and a second lowercase copy while preserving a
+  Unicode-compatible bounded path.
+
 - Strict declarative scenarios with named targets, per-target rules, matrix execution, and quorum qualification.
 - Direct target preflight with report and strict modes.
 - Exit-IP rotation/sticky classification, cross-run stability history, and pool diversity analysis.
@@ -43,6 +47,13 @@ All notable changes to RelayProbe are documented in this file. The project uses
 - Windows-native exclusive checkpoint locks and atomic file replacement.
 - A bounded, sequential `make cross-check` portability gate for fourteen
   OS/architecture targets.
+- Configurable per-candidate protocol auto-detection time budgets and
+  port-informed candidate ordering.
+- A configurable bounded intelligence-body capture with visibility in
+  observations, run configuration, and `doctor` diagnostics.
+- A preflight 512 MiB concurrent response-capture safety budget.
+- An end-to-end CLI fixture that traverses a controlled local HTTP CONNECT
+  proxy and validates the resulting machine-readable evidence.
 
 ### Changed
 
@@ -71,6 +82,17 @@ All notable changes to RelayProbe are documented in this file. The project uses
   comparison behavior replaces Unix-only assumptions.
 - Observation storage preallocates only the common bounded attempt window,
   reducing repeat-test growth without reserving full large matrices.
+- Response byte counts, SHA-256, and throughput now use pooled streaming reads;
+  full response retention occurs only for JSON or Unicode content assertions.
+- Network failures now distinguish reset connections, broken pipes, closed
+  connections, unexpected EOF, and operating-system timeouts.
+- Shell completion options are generated from the actual check flag set so new
+  flags cannot silently drift out of completion scripts.
+
+### Fixed
+
+- Overall expiration during protocol auto-detection now remains a classified
+  timeout instead of degrading to a generic `operation_failed` result.
 
 ### Security
 

@@ -94,9 +94,18 @@ as one filesystem operation.
 
 Optional metadata is loaded before workers start into IPv4 and IPv6 prefix maps.
 Lookup checks at most 33 IPv4 or 129 IPv6 prefix lengths and never performs a
-network request. Content qualification operates only on the already bounded
-response body. Transfer rate uses body bytes divided by body-read duration and
-is kept separate from TTFB and total latency.
+network request. Responses are counted and SHA-256 hashed as a stream through a
+reused fixed-size transfer buffer. Only a configurable bounded prefix is kept
+for ordinary exit intelligence; content assertions retain the complete bounded
+body only for JSON or Unicode-aware inspection. ASCII signatures use a streaming
+multi-pattern matcher and do not create a full lowercase copy. Transfer rate
+uses body bytes divided by body-read duration and is kept separate from TTFB
+and total latency.
+
+Protocol auto-detection orders candidates using conservative port hints and
+assigns each candidate no more than the configured probe timeout or its fair
+share of the remaining overall attempt deadline. One unresponsive protocol can
+therefore no longer consume the complete detection window.
 
 Qualification uses a configurable minimum success ratio. The checker computes
 the required success count before starting, stops when that count is reached in

@@ -2,12 +2,15 @@ package engine
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"io"
@@ -15,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -133,6 +137,192 @@ func TestAnonymityEvidenceLevels(t *testing.T) {
 	}
 }
 
+func TestReadBodyEvidenceStreamsAndCapsCapture(t *testing.T) {
+	payload := bytes.Repeat([]byte("relayprobe"), 200000)
+	wantDigest := sha256.Sum256(payload)
+	body, count, digest, err := readBodyEvidence(bytes.NewReader(payload), int64(len(payload)), 4096, int64(len(payload)), nil)
+	if err != nil || count != int64(len(payload)) || len(body) != 4096 || digest != hex.EncodeToString(wantDigest[:]) {
+		t.Fatalf("count=%d captured=%d digest=%s err=%v", count, len(body), digest, err)
+	}
+	body, count, _, err = readBodyEvidence(bytes.NewReader(payload), 65536, 4096, int64(len(payload)), nil)
+	if err != nil || count != 65537 || len(body) != 4096 {
+		t.Fatalf("limited count=%d captured=%d err=%v", count, len(body), err)
+	}
+}
+
+func TestTextMatcherStreamsAcrossChunks(t *testing.T) {
+	plan := compileTextMatchPlan([]string{"cloudflare", "access denied"}, []string{"captcha", "turnstile"})
+	if plan == nil {
+		t.Fatal("ASCII rules did not produce a streaming matcher")
+	}
+	matcher := plan.matcher()
+	for _, chunk := range []string{"CLOUD", "Flare says access ", "DENIED and cap", "TCHA"} {
+		if _, err := matcher.Write([]byte(chunk)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []bool{true, true, true, false}
+	if !slices.Equal(matcher.found, want) {
+		t.Fatalf("matches=%v want=%v", matcher.found, want)
+	}
+	if got := compileTextMatchPlan([]string{"café"}, nil); got != nil {
+		t.Fatal("Unicode rule must use the compatibility capture path")
+	}
+}
+
+func TestTextMatcherEquivalentAcrossBoundaries(t *testing.T) {
+	patterns := []string{"alpha", "access denied", "403!", "aaaaab", "x-y_z"}
+	plan := compileTextMatchPlan(patterns, nil)
+	bodies := []string{
+		"nothing relevant here",
+		"prefix ALPHA suffix",
+		"mixed Access DENIED response",
+		strings.Repeat("a", 80) + "b",
+		"status=403! x-Y_Z",
+	}
+	for _, body := range bodies {
+		lower := bytes.ToLower([]byte(body))
+		want := make([]bool, len(patterns))
+		for index, pattern := range patterns {
+			want[index] = bytes.Contains(lower, []byte(pattern))
+		}
+		for chunkSize := 1; chunkSize <= 17; chunkSize++ {
+			matcher := plan.matcher()
+			for offset := 0; offset < len(body); offset += chunkSize {
+				end := min(offset+chunkSize, len(body))
+				_, _ = matcher.Write([]byte(body[offset:end]))
+			}
+			if !slices.Equal(matcher.found, want) {
+				t.Fatalf("body=%q chunk=%d matches=%v want=%v", body, chunkSize, matcher.found, want)
+			}
+		}
+	}
+}
+
+func TestLargeResponseRetainsBoundedIntelligenceBody(t *testing.T) {
+	payload := bytes.Repeat([]byte("x"), 128<<10)
+	copy(payload[100<<10:], []byte("REQUIRED-MARKER"))
+	wantDigest := sha256.Sum256(payload)
+	c := baseChecker("http://target.test/payload")
+	c.Config.MaxResponseBytes = int64(len(payload))
+	c.Config.IntelligenceBytes = 4096
+	c.Config.RequireText = []string{"required-marker"}
+	c.requireText = []string{"required-marker"}
+	c.effectiveRules = nil
+	c.Connector.DialContext = pipeDial(func(conn net.Conn) {
+		reader := bufio.NewReader(conn)
+		_, _ = http.ReadRequest(reader)
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n")
+		_, _ = http.ReadRequest(reader)
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Length: "+itoa(len(payload))+"\r\n\r\n")
+		_, _ = conn.Write(payload)
+	})
+	result := c.Check(context.Background(), model.Proxy{Protocol: model.ProtocolHTTP, Host: "proxy", Port: 8080})
+	observation := result.Observations[0]
+	if result.Status != model.StatusOK || observation.BodyBytes != int64(len(payload)) || observation.BodyCapturedBytes != 4096 || observation.BodySHA256 != hex.EncodeToString(wantDigest[:]) || observation.Anonymity != "unavailable" {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
+func BenchmarkReadBodyEvidence(b *testing.B) {
+	payload := bytes.Repeat([]byte("x"), 1<<20)
+	b.Run("legacy_read_all", func(b *testing.B) {
+		b.SetBytes(int64(len(payload)))
+		b.ReportAllocs()
+		for range b.N {
+			body, err := io.ReadAll(io.LimitReader(bytes.NewReader(payload), int64(len(payload))+1))
+			digest := sha256.Sum256(body)
+			if err != nil || len(body) != len(payload) || digest == [32]byte{} {
+				b.Fatal(err, len(body))
+			}
+		}
+	})
+	for _, capture := range []int64{64 << 10, 1 << 20} {
+		name := "capture_64KiB"
+		if capture == 1<<20 {
+			name = "capture_full"
+		}
+		b.Run(name, func(b *testing.B) {
+			b.SetBytes(int64(len(payload)))
+			b.ReportAllocs()
+			for range b.N {
+				body, count, _, err := readBodyEvidence(bytes.NewReader(payload), int64(len(payload)), capture, int64(len(payload)), nil)
+				if err != nil || count != int64(len(payload)) || len(body) != int(capture) {
+					b.Fatal(err, count, len(body))
+				}
+			}
+		})
+	}
+	b.Run("legacy_text_assertion", func(b *testing.B) {
+		b.SetBytes(int64(len(payload)))
+		b.ReportAllocs()
+		pattern := []byte("access denied")
+		for range b.N {
+			body, err := io.ReadAll(io.LimitReader(bytes.NewReader(payload), int64(len(payload))+1))
+			matched := bytes.Contains(bytes.ToLower(body), pattern)
+			if err != nil || matched {
+				b.Fatal(err, matched)
+			}
+		}
+	})
+	b.Run("stream_text_assertion", func(b *testing.B) {
+		b.SetBytes(int64(len(payload)))
+		b.ReportAllocs()
+		plan := compileTextMatchPlan([]string{"access denied"}, nil)
+		for range b.N {
+			matcher := plan.matcher()
+			body, count, _, err := readBodyEvidence(bytes.NewReader(payload), int64(len(payload)), 64<<10, int64(len(payload)), matcher)
+			if err != nil || count != int64(len(payload)) || len(body) != 64<<10 || matcher.found[0] {
+				b.Fatal(err, count, len(body), matcher.found)
+			}
+		}
+	})
+}
+
+func TestAutoProtocolOrderUsesPortHints(t *testing.T) {
+	assertOrder := func(port uint16, want ...model.Protocol) {
+		t.Helper()
+		got := autoProtocols(port, false)
+		if len(got) != len(want) {
+			t.Fatalf("port=%d got=%v want=%v", port, got, want)
+		}
+		for index := range want {
+			if got[index] != want[index] {
+				t.Fatalf("port=%d got=%v want=%v", port, got, want)
+			}
+		}
+	}
+	assertOrder(1080, model.ProtocolSOCKS5, model.ProtocolSOCKS4, model.ProtocolHTTP, model.ProtocolHTTPS)
+	assertOrder(443, model.ProtocolHTTPS, model.ProtocolHTTP, model.ProtocolSOCKS5, model.ProtocolSOCKS4)
+	assertOrder(8080, model.ProtocolHTTP, model.ProtocolHTTPS, model.ProtocolSOCKS5, model.ProtocolSOCKS4)
+	if got := autoProtocols(1080, true); got[len(got)-1] != model.ProtocolSOCKS4A {
+		t.Fatalf("remote DNS order=%v", got)
+	}
+}
+
+func TestAutoProbeTimeoutLeavesTimeForOtherCandidates(t *testing.T) {
+	c := baseChecker("http://target.test/")
+	c.Config.RequestTimeout = 180 * time.Millisecond
+	c.Config.AutoProbeTimeout = 100 * time.Millisecond
+	var calls atomic.Int64
+	c.Connector.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+		calls.Add(1)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	started := time.Now()
+	result := c.Check(context.Background(), model.Proxy{Protocol: model.ProtocolAuto, Host: "proxy", Port: 8080})
+	if elapsed := time.Since(started); elapsed > 350*time.Millisecond {
+		t.Fatalf("auto detection exceeded bound: %s", elapsed)
+	}
+	if calls.Load() < 3 {
+		t.Fatalf("only %d protocol candidates were attempted", calls.Load())
+	}
+	if len(result.Observations) != 1 || result.Observations[0].Code != "attempt_timeout" || result.Status != model.StatusTimeout {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
 func TestContentAssertionsAndThroughputEvidence(t *testing.T) {
 	body := "required-marker" + strings.Repeat("x", 20<<10)
 	newChecker := func() *Checker {
@@ -141,6 +331,7 @@ func TestContentAssertionsAndThroughputEvidence(t *testing.T) {
 		c.Config.MinThroughputKBPS = 1
 		c.Config.RequireText = []string{"REQUIRED-MARKER"}
 		c.requireText = []string{"required-marker"}
+		c.effectiveRules = nil
 		c.Connector.DialContext = pipeDial(func(conn net.Conn) {
 			br := bufio.NewReader(conn)
 			_, _ = http.ReadRequest(br)
@@ -158,6 +349,7 @@ func TestContentAssertionsAndThroughputEvidence(t *testing.T) {
 	c = newChecker()
 	c.Config.RejectText = []string{"required-marker"}
 	c.rejectText = []string{"required-marker"}
+	c.effectiveRules = nil
 	r = c.Check(context.Background(), model.Proxy{Protocol: model.ProtocolHTTP, Host: "proxy", Port: 8080})
 	if r.Status != model.StatusFailed || r.Observations[0].Code != "rejected_content_present" || r.Observations[0].BodyBytes != int64(len(body)) {
 		t.Fatalf("result=%+v", r)
@@ -169,6 +361,7 @@ func TestJSONResponseAssertions(t *testing.T) {
 	newChecker := func(expected string) *Checker {
 		c := baseChecker("http://target.test/json")
 		c.expectJSON = []jsonExpectation{{path: []string{"nested", "value"}, expected: expected}}
+		c.effectiveRules = nil
 		c.Connector.DialContext = pipeDial(func(conn net.Conn) {
 			br := bufio.NewReader(conn)
 			_, _ = http.ReadRequest(br)

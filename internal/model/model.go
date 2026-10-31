@@ -164,6 +164,7 @@ type Observation struct {
 	Message             string            `json:"message,omitempty"`
 	HTTPStatus          int               `json:"http_status,omitempty"`
 	BodyBytes           int64             `json:"body_bytes,omitempty"`
+	BodyCapturedBytes   int64             `json:"body_captured_bytes,omitempty"`
 	BodySHA256          string            `json:"body_sha256,omitempty"`
 	ThroughputKBPS      float64           `json:"throughput_kbps,omitempty"`
 	ExitIP              string            `json:"exit_ip,omitempty"`
@@ -282,36 +283,38 @@ type RotationProfile struct {
 }
 
 type RunConfiguration struct {
-	Profile          string   `json:"profile,omitempty"`
-	Protocol         Protocol `json:"protocol"`
-	Concurrency      int      `json:"concurrency"`
-	QueueSize        int      `json:"queue_size"`
-	PerTarget        int      `json:"per_target_concurrency"`
-	RateLimit        float64  `json:"requests_per_second"`
-	Repeat           int      `json:"repeat"`
-	MinSuccessRate   float64  `json:"min_success_rate"`
-	ConnectTimeout   string   `json:"connect_timeout"`
-	RequestTimeout   string   `json:"request_timeout"`
-	RetryBackoff     string   `json:"retry_backoff"`
-	StopOnSuccess    bool     `json:"stop_on_success"`
-	RetryPermanent   bool     `json:"retry_permanent_failures"`
-	AllowRemoteDNS   bool     `json:"allow_remote_dns"`
-	MaxResponseBytes int64    `json:"max_response_bytes"`
-	MinResponseBytes int64    `json:"min_response_bytes,omitempty"`
-	MinThroughput    float64  `json:"min_throughput_kbps,omitempty"`
-	ContentRules     int      `json:"content_rules,omitempty"`
-	MetadataEnabled  bool     `json:"metadata_enabled,omitempty"`
-	TargetMatrix     bool     `json:"target_matrix,omitempty"`
-	TargetQuorum     int      `json:"target_quorum,omitempty"`
-	RotationSamples  int      `json:"rotation_samples,omitempty"`
-	RotationInterval string   `json:"rotation_interval,omitempty"`
-	Preflight        string   `json:"preflight,omitempty"`
-	AutoConcurrency  bool     `json:"auto_concurrency,omitempty"`
-	Scenario         string   `json:"scenario,omitempty"`
-	Label            string   `json:"label,omitempty"`
-	Deduplicate      bool     `json:"deduplicate"`
-	MaxInputEntries  int      `json:"max_input_entries"`
-	ValidationTarget []string `json:"validation_targets"`
+	Profile           string   `json:"profile,omitempty"`
+	Protocol          Protocol `json:"protocol"`
+	Concurrency       int      `json:"concurrency"`
+	QueueSize         int      `json:"queue_size"`
+	PerTarget         int      `json:"per_target_concurrency"`
+	RateLimit         float64  `json:"requests_per_second"`
+	Repeat            int      `json:"repeat"`
+	MinSuccessRate    float64  `json:"min_success_rate"`
+	ConnectTimeout    string   `json:"connect_timeout"`
+	RequestTimeout    string   `json:"request_timeout"`
+	AutoProbeTimeout  string   `json:"auto_probe_timeout"`
+	RetryBackoff      string   `json:"retry_backoff"`
+	StopOnSuccess     bool     `json:"stop_on_success"`
+	RetryPermanent    bool     `json:"retry_permanent_failures"`
+	AllowRemoteDNS    bool     `json:"allow_remote_dns"`
+	MaxResponseBytes  int64    `json:"max_response_bytes"`
+	IntelligenceBytes int64    `json:"intelligence_body_bytes"`
+	MinResponseBytes  int64    `json:"min_response_bytes,omitempty"`
+	MinThroughput     float64  `json:"min_throughput_kbps,omitempty"`
+	ContentRules      int      `json:"content_rules,omitempty"`
+	MetadataEnabled   bool     `json:"metadata_enabled,omitempty"`
+	TargetMatrix      bool     `json:"target_matrix,omitempty"`
+	TargetQuorum      int      `json:"target_quorum,omitempty"`
+	RotationSamples   int      `json:"rotation_samples,omitempty"`
+	RotationInterval  string   `json:"rotation_interval,omitempty"`
+	Preflight         string   `json:"preflight,omitempty"`
+	AutoConcurrency   bool     `json:"auto_concurrency,omitempty"`
+	Scenario          string   `json:"scenario,omitempty"`
+	Label             string   `json:"label,omitempty"`
+	Deduplicate       bool     `json:"deduplicate"`
+	MaxInputEntries   int      `json:"max_input_entries"`
+	ValidationTarget  []string `json:"validation_targets"`
 }
 
 type InputStats struct {

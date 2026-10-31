@@ -1,10 +1,15 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -71,6 +76,71 @@ func TestExitCodesAndUnknownCommand(t *testing.T) {
 	}
 	if code, _, _ := run([]string{"check", "--min-success-rate", "0"}, ""); code != ExitUsage {
 		t.Fatalf("zero success rate code %d", code)
+	}
+}
+
+func TestCheckEndToEndThroughControlledConnectProxy(t *testing.T) {
+	targetListener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("local sockets unavailable: %v", err)
+	}
+	target := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"origin":"8.8.8.8","headers":{}}`)
+	}))
+	target.Listener = targetListener
+	target.Start()
+	defer target.Close()
+
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("local proxy socket unavailable: %v", err)
+	}
+	defer listener.Close()
+	proxyDone := make(chan struct{})
+	go func() {
+		defer close(proxyDone)
+		client, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer client.Close()
+		reader := bufio.NewReader(client)
+		request, readErr := http.ReadRequest(reader)
+		if readErr != nil || request.Method != http.MethodConnect {
+			return
+		}
+		upstream, dialErr := net.Dial("tcp", request.Host)
+		if dialErr != nil {
+			return
+		}
+		defer upstream.Close()
+		_, _ = io.WriteString(client, "HTTP/1.1 200 Connection Established\r\n\r\n")
+		requestDone := make(chan struct{})
+		go func() {
+			_, _ = io.Copy(upstream, reader)
+			close(requestDone)
+		}()
+		_, _ = io.Copy(client, upstream)
+		_ = client.Close()
+		<-requestDone
+	}()
+
+	code, stdout, stderr := run([]string{"check", "--profile", "fast", "--protocol", "http", "--format", "jsonl", "--allow-private-targets", "--target", target.URL}, listener.Addr().String()+"\n")
+	if code != ExitOK {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	var result model.Result
+	if err := json.Unmarshal(bytes.TrimSpace([]byte(stdout)), &result); err != nil {
+		t.Fatalf("decode output: %v output=%q", err, stdout)
+	}
+	if result.Status != model.StatusOK || result.Successes != 1 || len(result.Observations) != 1 || result.Observations[0].ExitIP != "8.8.8.8" || result.Observations[0].BodySHA256 == "" {
+		t.Fatalf("result=%+v", result)
+	}
+	select {
+	case <-proxyDone:
+	case <-time.After(time.Second):
+		t.Fatal("controlled proxy did not terminate")
 	}
 }
 
@@ -184,7 +254,7 @@ func TestResumeIncludesCheckpointResults(t *testing.T) {
 func TestShellCompletions(t *testing.T) {
 	for _, shell := range []string{"bash", "zsh", "fish"} {
 		code, out, diag := run([]string{"completion", shell}, "")
-		if code != ExitOK || !strings.Contains(out, "relayprobe") || diag != "" {
+		if code != ExitOK || !strings.Contains(out, "relayprobe") || !strings.Contains(out, "auto-probe-timeout") || !strings.Contains(out, "intelligence-bytes") || diag != "" {
 			t.Fatalf("shell=%s code=%d out=%q diag=%q", shell, code, out, diag)
 		}
 	}
@@ -355,16 +425,16 @@ func TestExplicitFalseBooleanOverridesEnvironmentAndProfile(t *testing.T) {
 func TestContentThroughputAndBaselineOptions(t *testing.T) {
 	o := checkOptions{
 		protocol: "https", format: "jsonl", inputFormat: "text", color: "never",
-		rate: -1, maxRedirects: -1, maxResponseBytes: 2 << 20, minResponseBytes: 32 << 10, minThroughput: 250,
+		rate: -1, maxRedirects: -1, maxResponseBytes: 2 << 20, intelligenceBytes: 96 << 10, minResponseBytes: 32 << 10, minThroughput: 250,
 		requireText: stringsFlag{"expected-json"}, rejectText: stringsFlag{"access denied"},
 		expectJSON: stringsFlag{"status=ok"},
-		baselineIP: "198.51.100.10",
+		baselineIP: "198.51.100.10", autoProbeTimeout: "1500ms",
 	}
 	cfg, proto, _, _, err := (CLI{}).loadCheck(o)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if proto != model.ProtocolHTTPS || cfg.MaxResponseBytes != 2<<20 || cfg.MinResponseBytes != 32<<10 || cfg.MinThroughputKBPS != 250 || len(cfg.RequireText) != 1 || len(cfg.RejectText) != 1 || len(cfg.ExpectJSON) != 1 || cfg.AnonymityBaseline != "198.51.100.10" {
+	if proto != model.ProtocolHTTPS || cfg.MaxResponseBytes != 2<<20 || cfg.IntelligenceBytes != 96<<10 || cfg.AutoProbeTimeout != 1500*time.Millisecond || cfg.MinResponseBytes != 32<<10 || cfg.MinThroughputKBPS != 250 || len(cfg.RequireText) != 1 || len(cfg.RejectText) != 1 || len(cfg.ExpectJSON) != 1 || cfg.AnonymityBaseline != "198.51.100.10" {
 		t.Fatalf("cfg=%+v proto=%s", cfg, proto)
 	}
 }

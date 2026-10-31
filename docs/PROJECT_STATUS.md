@@ -1,6 +1,6 @@
 # Project status
 
-Last verified: 2026-10-30
+Last verified: 2026-10-31
 
 ## Objective and architecture
 
@@ -53,6 +53,13 @@ It is not represented as a completed independent security audit.
   for the current parser versus 1.21 s and 18.6 MiB for commit `74427aa`.
 - The bounded HTTP response reader measured 6.08 us/op and 5,123 B/op after
   removing duplicate buffering.
+- Streaming 1 MiB response evidence with a 64 KiB intelligence capture measured
+  4.76 ms/op and 66,140 B/op versus 6.39 ms/op and 2,228,054 B/op for the prior
+  `ReadAll` path, using five samples on the same host.
+- Streaming search for an absent ASCII assertion over 1 MiB measured 4.77 ms/op
+  and 140,068 B/op median versus 4.21 ms/op and 3,276,633 B/op for full-body
+  lowercase matching: about 95.7% fewer allocated bytes for a 13% CPU tradeoff
+  limited to assertion-enabled checks.
 
 The benchmark conditions and historical results are in
 [BENCHMARKS.md](BENCHMARKS.md). Controlled local fixtures are used instead of

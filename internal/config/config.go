@@ -24,8 +24,10 @@ type Config struct {
 	RateLimit         float64                  `json:"requests_per_second"`
 	ConnectTimeout    time.Duration            `json:"-"`
 	RequestTimeout    time.Duration            `json:"-"`
+	AutoProbeTimeout  time.Duration            `json:"-"`
 	ConnectTimeoutRaw string                   `json:"connect_timeout"`
 	RequestTimeoutRaw string                   `json:"request_timeout"`
+	AutoProbeRaw      string                   `json:"auto_probe_timeout"`
 	Repeat            int                      `json:"repeat"`
 	MinSuccessRate    float64                  `json:"min_success_rate"`
 	Targets           []string                 `json:"targets"`
@@ -35,6 +37,7 @@ type Config struct {
 	MaxInputBytes     int64                    `json:"max_input_bytes"`
 	MaxInputEntries   int                      `json:"max_input_entries"`
 	MaxResponseBytes  int64                    `json:"max_response_bytes"`
+	IntelligenceBytes int64                    `json:"intelligence_body_bytes"`
 	MinResponseBytes  int64                    `json:"min_response_bytes"`
 	MinThroughputKBPS float64                  `json:"min_throughput_kbps"`
 	ExpectedBodySHA   string                   `json:"expected_body_sha256,omitempty"`
@@ -79,13 +82,38 @@ type ResponseRules struct {
 	ExpectedBodySHA   string   `json:"expected_body_sha256,omitempty"`
 }
 
+const MaxConcurrentCaptureBytes int64 = 512 << 20
+
+func (c Config) ResponseCaptureLimit() int64 {
+	limit := min(c.IntelligenceBytes, c.MaxResponseBytes)
+	fullCapture := len(c.ExpectJSON) > 0 || hasNonASCII(c.RequireText) || hasNonASCII(c.RejectText)
+	for _, rules := range c.TargetRules {
+		fullCapture = fullCapture || len(rules.ExpectJSON) > 0 || hasNonASCII(rules.RequireText) || hasNonASCII(rules.RejectText)
+	}
+	if fullCapture {
+		return c.MaxResponseBytes
+	}
+	return limit
+}
+
+func hasNonASCII(values []string) bool {
+	for _, value := range values {
+		for index := range len(value) {
+			if value[index] >= 0x80 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func Defaults() Config {
 	return Config{
 		Concurrency: 128, QueueSize: 256, PerTarget: 64,
-		ConnectTimeout: 5 * time.Second, RequestTimeout: 12 * time.Second,
-		ConnectTimeoutRaw: "5s", RequestTimeoutRaw: "12s",
+		ConnectTimeout: 5 * time.Second, RequestTimeout: 12 * time.Second, AutoProbeTimeout: 3 * time.Second,
+		ConnectTimeoutRaw: "5s", RequestTimeoutRaw: "12s", AutoProbeRaw: "3s",
 		Repeat: 2, MinSuccessRate: 0.5, Targets: []string{"https://example.com/"}, MaxRedirects: 2,
-		MaxInputBytes: 256 << 20, MaxInputEntries: 1_000_000, MaxResponseBytes: 1 << 20,
+		MaxInputBytes: 256 << 20, MaxInputEntries: 1_000_000, MaxResponseBytes: 1 << 20, IntelligenceBytes: 64 << 10,
 		AllowedHosts: []string{"example.com"},
 		DNSCacheTTL:  5 * time.Minute, DNSCacheTTLRaw: "5m",
 		RetryBackoff: 100 * time.Millisecond, RetryBackoffRaw: "100ms",
@@ -158,6 +186,7 @@ func applyEnv(c *Config) error {
 	}{
 		{"RELAYPROBE_MAX_INPUT_BYTES", &c.MaxInputBytes},
 		{"RELAYPROBE_MAX_RESPONSE_BYTES", &c.MaxResponseBytes},
+		{"RELAYPROBE_INTELLIGENCE_BODY_BYTES", &c.IntelligenceBytes},
 		{"RELAYPROBE_MIN_RESPONSE_BYTES", &c.MinResponseBytes},
 	} {
 		if err := envInt64(item.name, item.dst); err != nil {
@@ -196,6 +225,9 @@ func applyEnv(c *Config) error {
 	}
 	if v := os.Getenv("RELAYPROBE_REQUEST_TIMEOUT"); v != "" {
 		c.RequestTimeoutRaw = v
+	}
+	if v := os.Getenv("RELAYPROBE_AUTO_PROBE_TIMEOUT"); v != "" {
+		c.AutoProbeRaw = v
 	}
 	if v := os.Getenv("RELAYPROBE_DATA_DIR"); v != "" {
 		c.DataDir = v
@@ -319,6 +351,9 @@ func (c *Config) ParseDurations() error {
 	if c.RequestTimeout, err = time.ParseDuration(c.RequestTimeoutRaw); err != nil {
 		return fmt.Errorf("invalid request_timeout: %w", err)
 	}
+	if c.AutoProbeTimeout, err = time.ParseDuration(c.AutoProbeRaw); err != nil {
+		return fmt.Errorf("invalid auto_probe_timeout: %w", err)
+	}
 	if c.ProgressInterval, err = time.ParseDuration(c.ProgressRaw); err != nil {
 		return fmt.Errorf("invalid progress_interval: %w", err)
 	}
@@ -359,6 +394,9 @@ func (c Config) Validate() error {
 	if c.RequestTimeout < c.ConnectTimeout || c.RequestTimeout > 5*time.Minute {
 		return errors.New("request_timeout must be >= connect_timeout and <= 5m")
 	}
+	if c.AutoProbeTimeout < 100*time.Millisecond || c.AutoProbeTimeout > 2*time.Minute {
+		return errors.New("auto_probe_timeout must be between 100ms and 2m")
+	}
 	if c.DNSCacheTTL < 0 || c.DNSCacheTTL > 24*time.Hour {
 		return errors.New("dns_cache_ttl must be between 0 and 24h")
 	}
@@ -385,6 +423,12 @@ func (c Config) Validate() error {
 	}
 	if c.MaxResponseBytes < 1024 || c.MaxResponseBytes > 64<<20 {
 		return errors.New("max_response_bytes must be between 1KiB and 64MiB")
+	}
+	if c.IntelligenceBytes < 1024 || c.IntelligenceBytes > 64<<20 {
+		return errors.New("intelligence_body_bytes must be between 1KiB and 64MiB")
+	}
+	if c.ResponseCaptureLimit() > MaxConcurrentCaptureBytes/int64(c.Concurrency) {
+		return errors.New("concurrency and response capture limits exceed the 512MiB safety budget")
 	}
 	if c.MinResponseBytes < 0 || c.MinResponseBytes > c.MaxResponseBytes {
 		return errors.New("min_response_bytes must be between 0 and max_response_bytes")
@@ -562,6 +606,7 @@ func (c Config) MarshalJSON() ([]byte, error) {
 	a := alias(c)
 	a.ConnectTimeoutRaw = c.ConnectTimeout.String()
 	a.RequestTimeoutRaw = c.RequestTimeout.String()
+	a.AutoProbeRaw = c.AutoProbeTimeout.String()
 	a.ProgressRaw = c.ProgressInterval.String()
 	a.DNSCacheTTLRaw = c.DNSCacheTTL.String()
 	a.RetryBackoffRaw = c.RetryBackoff.String()

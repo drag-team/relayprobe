@@ -132,3 +132,32 @@ median from 10.03 us/op, 13,486 B/op, and 23 allocations to 6.08 us/op,
 go test -run '^$' -bench '^BenchmarkParser' -benchmem -count=5 ./internal/input
 go test -run '^$' -bench '^BenchmarkReadResponseLimited$' -benchmem -count=5 ./internal/protocol
 ```
+
+### Streaming response evidence
+
+On 2026-10-30, a 1 MiB in-memory response was measured before and after moving
+body hashing and byte accounting to a streaming reader. Five samples on the
+same four-vCPU Go 1.26.8 host produced these medians:
+
+| Mode | Time/op | Throughput | Bytes/op | Allocations/op |
+|---|---:|---:|---:|---:|
+| Previous `ReadAll` plus SHA-256 | 6.39 ms | 164 MB/s | 2,228,054 | 26 |
+| Streaming, 64 KiB intelligence capture | 4.76 ms | 220 MB/s | 66,140 | 10 |
+| Streaming, complete 1 MiB assertion capture | 5.24 ms | 200 MB/s | 1,056,284 | 11 |
+
+The ordinary bounded-capture path used about 97% fewer allocated bytes and was
+about 25% faster in this controlled benchmark. Network performance remains
+dominated by the proxy and target.
+
+An additional worst-case assertion benchmark searched for an absent ASCII
+signature in a 1 MiB response. Five samples produced medians of 4.21 ms and
+3,276,633 B/op for the former full-body lowercase path, versus 4.77 ms and
+140,068 B/op for the streaming matcher. The matcher therefore used about 95.7%
+fewer allocated bytes at a 13% median CPU-time cost confined to checks that
+enable text assertions. Matching signatures may finish scanning earlier.
+
+Reproduce both measurements with:
+
+```sh
+go test -run '^$' -bench '^BenchmarkReadBodyEvidence$' -benchmem -count=5 ./internal/engine
+```

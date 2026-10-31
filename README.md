@@ -24,6 +24,7 @@ daemon, telemetry, or root requirement.
 - Multi-target scenarios with per-target assertions, quorum qualification, and direct preflight.
 - Exit-IP rotation, sticky-session, pool-diversity, and cross-run stability analysis.
 - Response assertions, body throughput measurement, and evidence-based anonymity levels.
+- Streaming response hashing with bounded intelligence capture and explicit memory diagnostics.
 - Resumable checkpoints, deterministic dataset sharding, and result-run merging.
 - JSON quality gates and JUnit XML reports for CI policy enforcement.
 - Optional offline country, city, ASN, organization, and network-type metadata.
@@ -211,14 +212,27 @@ is set.
 control global workers, backpressure, destination pressure, and attempt start
 rate. Defaults are conservative for an ordinary VPS; increasing concurrency
 does not necessarily improve throughput. `--connect-timeout`,
-`--request-timeout`, `--repeat`, `--retry-backoff`, and `--dns-cache-ttl`
-control failure cost and repeat behavior.
+`--request-timeout`, `--auto-probe-timeout`, `--repeat`, `--retry-backoff`, and
+`--dns-cache-ttl` control failure cost and repeat behavior. Automatic protocol
+detection gives each candidate a fair bounded share of the overall timeout and
+prioritizes likely protocols for common HTTP, HTTPS, and SOCKS ports.
 
 `--max-response-bytes` bounds each downloaded response body and defaults to
 1 MiB. Lower it for high-concurrency reachability checks; raise it deliberately
 for controlled throughput targets. Redirect and proxy-authentication response
 bodies are not downloaded because their content is not part of final-target
 qualification.
+
+Response hashes, byte counts, and throughput are calculated while streaming.
+By default, at most 64 KiB per response is retained for exit-IP/anonymity JSON
+inspection; `--intelligence-bytes` changes that cap. Text and JSON assertions
+use bounded processing: ASCII text signatures are matched incrementally without
+retaining the complete body, while JSON and Unicode text assertions retain the
+complete bounded body because they require structured or Unicode-aware inspection.
+`relayprobe doctor` reports the resulting per-worker capture and theoretical
+concurrent upper bound. Configuration validation rejects combinations whose
+worst-case retained response data exceeds the 512 MiB safety budget; reduce
+concurrency or capture size instead of risking process-wide memory exhaustion.
 
 `--concurrency auto` derives a bounded recommendation from CPU count and the
 current file-descriptor limit, capped at 1024. `relayprobe doctor` reports that
@@ -314,11 +328,11 @@ Environment configuration covers every persistent engine setting:
 |---|---|
 | Concurrency | `RELAYPROBE_CONCURRENCY`, `RELAYPROBE_QUEUE_SIZE`, `RELAYPROBE_PER_TARGET_CONCURRENCY`, `RELAYPROBE_REQUESTS_PER_SECOND` |
 | Measurements | `RELAYPROBE_REPEAT`, `RELAYPROBE_MIN_SUCCESS_RATE`, `RELAYPROBE_STOP_ON_SUCCESS`, `RELAYPROBE_RETRY_PERMANENT_FAILURES`, `RELAYPROBE_ROTATION_SAMPLES`, `RELAYPROBE_ROTATION_INTERVAL` |
-| Time | `RELAYPROBE_CONNECT_TIMEOUT`, `RELAYPROBE_REQUEST_TIMEOUT`, `RELAYPROBE_DNS_CACHE_TTL`, `RELAYPROBE_RETRY_BACKOFF`, `RELAYPROBE_PROGRESS_INTERVAL` |
+| Time | `RELAYPROBE_CONNECT_TIMEOUT`, `RELAYPROBE_REQUEST_TIMEOUT`, `RELAYPROBE_AUTO_PROBE_TIMEOUT`, `RELAYPROBE_DNS_CACHE_TTL`, `RELAYPROBE_RETRY_BACKOFF`, `RELAYPROBE_PROGRESS_INTERVAL` |
 | Destinations | `RELAYPROBE_TARGETS`, `RELAYPROBE_ALLOWED_TARGET_HOSTS`, `RELAYPROBE_MAX_REDIRECTS`, `RELAYPROBE_ALLOW_PRIVATE_TARGETS`, `RELAYPROBE_ALLOW_REMOTE_DNS`, `RELAYPROBE_TARGET_MATRIX`, `RELAYPROBE_TARGET_QUORUM`, `RELAYPROBE_PREFLIGHT` |
 | Response qualification | `RELAYPROBE_MIN_RESPONSE_BYTES`, `RELAYPROBE_MIN_THROUGHPUT_KBPS`, `RELAYPROBE_REQUIRE_TEXT`, `RELAYPROBE_REJECT_TEXT`, `RELAYPROBE_EXPECT_JSON`, `RELAYPROBE_EXPECTED_BODY_SHA256`, `RELAYPROBE_ANONYMITY_BASELINE_IP` |
 | TLS trust | `RELAYPROBE_CA_BUNDLE`, `RELAYPROBE_PROXY_CA_BUNDLE` |
-| Resource limits | `RELAYPROBE_MAX_INPUT_BYTES`, `RELAYPROBE_MAX_INPUT_ENTRIES`, `RELAYPROBE_MAX_RESPONSE_BYTES` |
+| Resource limits | `RELAYPROBE_MAX_INPUT_BYTES`, `RELAYPROBE_MAX_INPUT_ENTRIES`, `RELAYPROBE_MAX_RESPONSE_BYTES`, `RELAYPROBE_INTELLIGENCE_BODY_BYTES` |
 | Persistence and metadata | `RELAYPROBE_DATA_DIR`, `RELAYPROBE_SAVE`, `RELAYPROBE_METADATA_FILE` |
 
 List values are comma-separated. Boolean values use Go boolean syntax such as
