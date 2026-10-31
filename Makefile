@@ -18,10 +18,14 @@ check: fmt-check vet test race
 
 cross-check:
 	@set -eu; tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
-	for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64 freebsd/amd64 freebsd/arm64 openbsd/amd64 netbsd/amd64 dragonfly/amd64 illumos/amd64 solaris/amd64 aix/ppc64; do \
+	for target in linux/amd64 linux/386 linux/arm linux/arm64 linux/riscv64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64 freebsd/amd64 freebsd/arm64 openbsd/amd64 netbsd/amd64 dragonfly/amd64 illumos/amd64 solaris/amd64 aix/ppc64; do \
 		os="$${target%/*}"; arch="$${target#*/}"; suffix=""; test "$$os" != windows || suffix=.exe; \
 		printf 'building %s\n' "$$target"; \
-		CGO_ENABLED=0 GOOS="$$os" GOARCH="$$arch" go build -mod=readonly -trimpath -buildvcs=false -o "$$tmp/netvex-$$os-$$arch$$suffix" ./cmd/netvex; \
+		if test "$$target" = linux/arm; then \
+			CGO_ENABLED=0 GOOS="$$os" GOARCH="$$arch" GOARM=7 go build -mod=readonly -trimpath -buildvcs=false -o "$$tmp/netvex-linux-armv7" ./cmd/netvex; \
+		else \
+			CGO_ENABLED=0 GOOS="$$os" GOARCH="$$arch" go build -mod=readonly -trimpath -buildvcs=false -o "$$tmp/netvex-$$os-$$arch$$suffix" ./cmd/netvex; \
+		fi; \
 	done
 
 reproducibility-check:

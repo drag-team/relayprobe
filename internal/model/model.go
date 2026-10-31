@@ -172,6 +172,7 @@ type Observation struct {
 	ForwardingEvidence  []string          `json:"forwarding_evidence,omitempty"`
 	ProxyAuthentication string            `json:"proxy_authentication,omitempty"`
 	ResolvedIP          string            `json:"resolved_ip,omitempty"`
+	DestinationAttempts int               `json:"destination_address_attempts,omitempty"`
 	Timings             Timings           `json:"timings"`
 	ResponseHeaders     map[string]string `json:"response_headers,omitempty"`
 	Metadata            *ExitMetadata     `json:"metadata,omitempty"`
@@ -310,6 +311,7 @@ type RunConfiguration struct {
 	RotationInterval  string   `json:"rotation_interval,omitempty"`
 	Preflight         string   `json:"preflight,omitempty"`
 	AutoConcurrency   bool     `json:"auto_concurrency,omitempty"`
+	KeepPartial       bool     `json:"keep_partial,omitempty"`
 	Scenario          string   `json:"scenario,omitempty"`
 	Label             string   `json:"label,omitempty"`
 	Deduplicate       bool     `json:"deduplicate"`

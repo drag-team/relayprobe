@@ -26,6 +26,10 @@ Default safeguards:
 - a 512 MiB worst-case concurrent response-capture budget enforced before any
   network operation;
 - one aggregate decompressed-byte budget across all plain and gzip input sources;
+- at most four locally resolved, fully policy-approved target addresses are
+  considered for destination-specific fallback within one attempt deadline;
+- CI and release actions are pinned to audited immutable revisions, and source
+  checkout does not persist repository credentials;
 - proxy usernames and passwords redacted from ordinary output and omitted from history;
 - redacted `***` passwords rejected when diagnostic output is re-imported;
 - target paths, fragments, and queries removed from persisted observations unless

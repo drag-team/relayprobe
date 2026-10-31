@@ -46,6 +46,9 @@ When a large body was streamed without retaining it completely,
 `body_captured_bytes` records the smaller prefix available for intelligence
 inspection. Its absence means the full bounded body was available. Hash and
 throughput evidence always cover every transferred byte, not just that prefix.
+`destination_address_attempts` appears when a policy-approved secondary DNS
+answer was tried; `resolved_ip` is the address that produced the stored final
+observation.
 
 The CSV export is intentionally flat and contains the last observation's
 stage/code plus the most recent successful observation's exit, anonymity,
@@ -67,6 +70,7 @@ The embedded run configuration records `max_response_bytes`,
 `intelligence_body_bytes`, `min_response_bytes`, and `auto_probe_timeout`,
 making response-memory, throughput, and protocol-detection conditions
 reproducible without consulting the original command line.
+`keep_partial` records the explicit interruption-output policy when enabled.
 
 When a quality policy is active, `quality` contains a boolean result and the
 actual/operator/expected tuple for every evaluated check. The same evidence is

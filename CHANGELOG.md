@@ -12,10 +12,15 @@ All notable changes to NetVex are documented in this file. The project uses
   configuration namespace, artifacts, CI, documentation, and repository metadata.
 - A deterministic binary build gate using commit-derived timestamps, read-only
   module resolution, trimmed paths, and explicit VCS metadata control.
+- Explicit `--keep-partial` interruption handling that atomically publishes
+  already validated proxies while preserving the safe abort default.
+- Bounded destination-address fallback across up to four policy-approved DNS
+  answers for upstream, SOCKS, and TLS failures attributable to one target IP.
+- GitHub Actions dependencies pinned to verified immutable commits, with
+  checkout credentials disabled after source retrieval.
 - Streaming multi-pattern response matching for ASCII content assertions,
   avoiding full-body retention and a second lowercase copy while preserving a
   Unicode-compatible bounded path.
-
 - Strict declarative scenarios with named targets, per-target rules, matrix execution, and quorum qualification.
 - Direct target preflight with report and strict modes.
 - Exit-IP rotation/sticky classification, cross-run stability history, and pool diversity analysis.
@@ -49,8 +54,9 @@ All notable changes to NetVex are documented in this file. The project uses
 - Canonical version file, documented release locations, and hardened release validation.
 - Native Linux ARM64, macOS ARM64, and Windows x64 CI plus multiplatform release archives.
 - Windows-native exclusive checkpoint locks and atomic file replacement.
-- A bounded, sequential `make cross-check` portability gate for fourteen
+- A bounded, sequential `make cross-check` portability gate for seventeen
   OS/architecture targets.
+- Release and CI coverage for Linux 386, ARMv7, and RISC-V 64 systems.
 - Configurable per-candidate protocol auto-detection time budgets and
   port-informed candidate ordering.
 - A configurable bounded intelligence-body capture with visibility in

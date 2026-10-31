@@ -77,6 +77,9 @@ func TestExitCodesAndUnknownCommand(t *testing.T) {
 	if code, _, _ := run([]string{"check", "--min-success-rate", "0"}, ""); code != ExitUsage {
 		t.Fatalf("zero success rate code %d", code)
 	}
+	if code, _, diag := run([]string{"check", "--keep-partial"}, ""); code != ExitUsage || !strings.Contains(diag, "requires working-output") {
+		t.Fatalf("keep-partial code=%d diag=%q", code, diag)
+	}
 }
 
 func TestHelpUsesNetVexIdentity(t *testing.T) {
@@ -261,7 +264,7 @@ func TestResumeIncludesCheckpointResults(t *testing.T) {
 func TestShellCompletions(t *testing.T) {
 	for _, shell := range []string{"bash", "zsh", "fish"} {
 		code, out, diag := run([]string{"completion", shell}, "")
-		if code != ExitOK || !strings.Contains(out, "netvex") || !strings.Contains(out, "auto-probe-timeout") || !strings.Contains(out, "intelligence-bytes") || diag != "" {
+		if code != ExitOK || !strings.Contains(out, "netvex") || !strings.Contains(out, "auto-probe-timeout") || !strings.Contains(out, "intelligence-bytes") || !strings.Contains(out, "keep-partial") || diag != "" {
 			t.Fatalf("shell=%s code=%d out=%q diag=%q", shell, code, out, diag)
 		}
 	}
@@ -341,8 +344,8 @@ func TestRunsListsSavedSummaries(t *testing.T) {
 func TestRunConfigurationSanitizesTargetSecrets(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Targets = []string{"https://target.test/private/token?api_key=secret#fragment"}
-	r := runConfiguration(cfg, model.ProtocolHTTP, checkOptions{profile: "fast"})
-	if len(r.ValidationTarget) != 1 || r.ValidationTarget[0] != "https://target.test/" {
+	r := runConfiguration(cfg, model.ProtocolHTTP, checkOptions{profile: "fast", keepPartial: true})
+	if len(r.ValidationTarget) != 1 || r.ValidationTarget[0] != "https://target.test/" || !r.KeepPartial {
 		t.Fatalf("targets=%v", r.ValidationTarget)
 	}
 }
@@ -476,6 +479,26 @@ func TestSecureWorkingOutput(t *testing.T) {
 	}
 }
 
+func TestCommitPartialWorkingOutput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "partial.txt")
+	output, err := openSecureOutput(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := output.WriteLine("http://user:secret@host:80"); err != nil {
+		t.Fatal(err)
+	}
+	var diagnostics bytes.Buffer
+	if err := commitPartialWorking(output, path, 1, &diagnostics); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := os.ReadFile(path)
+	if err != nil || string(payload) != "http://user:secret@host:80\n" || !strings.Contains(diagnostics.String(), "interrupted run") {
+		t.Fatalf("payload=%q diagnostics=%q err=%v", payload, diagnostics.String(), err)
+	}
+	assertPrivateMode(t, path)
+}
+
 func TestSecureWorkingOutputAbortPreservesExisting(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "working.txt")
 	if err := os.WriteFile(path, []byte("old\n"), 0600); err != nil {
@@ -506,7 +529,7 @@ func TestNoValidInputDoesNotReplaceWorkingOutput(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 	c := CLI{Stdin: strings.NewReader("not-a-proxy\n"), Stdout: &stdout, Stderr: &stderr}
-	if code := c.Run([]string{"check", "--working-output", path, "--force", "--quiet"}); code != ExitNoValidInput {
+	if code := c.Run([]string{"check", "--working-output", path, "--keep-partial", "--force", "--quiet"}); code != ExitNoValidInput {
 		t.Fatalf("code=%d stderr=%s", code, stderr.String())
 	}
 	b, err := os.ReadFile(path)

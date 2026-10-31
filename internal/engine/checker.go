@@ -513,7 +513,18 @@ func (c *Checker) attempt(parent context.Context, p model.Proxy, target string, 
 			}
 			candidateCtx, cancelCandidate = context.WithTimeout(ctx, budget)
 		}
-		got, e := c.request(candidateCtx, candidate, destinationForProtocol(dest, protoName), rules)
+		var got model.Observation
+		var e error
+		addresses := destinationCandidates(dest, protoName, c.Config.AllowRemoteDNS)
+		for addressIndex, candidateDest := range addresses {
+			got, e = c.request(candidateCtx, candidate, candidateDest, rules)
+			if addressIndex > 0 {
+				got.DestinationAttempts = addressIndex + 1
+			}
+			if e == nil || addressIndex+1 == len(addresses) || candidateCtx.Err() != nil || !retryDestinationAddress(e) {
+				break
+			}
+		}
 		candidateErr := candidateCtx.Err()
 		cancelCandidate()
 		if p.Protocol == model.ProtocolAuto && ctx.Err() == nil && errors.Is(candidateErr, context.DeadlineExceeded) {
@@ -596,6 +607,62 @@ func destinationForProtocol(dest policy.Destination, protoName model.Protocol) p
 		}
 	}
 	return dest
+}
+
+const maxDestinationAddresses = 4
+
+func destinationCandidates(dest policy.Destination, protoName model.Protocol, remoteDNS bool) []policy.Destination {
+	if remoteDNS && protoName != model.ProtocolSOCKS4 {
+		return []policy.Destination{destinationForProtocol(dest, protoName)}
+	}
+	addresses := make([]netip.Addr, 0, min(len(dest.Resolved)+1, maxDestinationAddresses))
+	add := func(address netip.Addr) {
+		address = address.Unmap()
+		if !address.IsValid() || protoName == model.ProtocolSOCKS4 && !address.Is4() {
+			return
+		}
+		for _, existing := range addresses {
+			if existing == address {
+				return
+			}
+		}
+		if len(addresses) < maxDestinationAddresses {
+			addresses = append(addresses, address)
+		}
+	}
+	add(dest.IP)
+	for _, address := range dest.Resolved {
+		add(address)
+	}
+	if len(addresses) == 0 {
+		return []policy.Destination{destinationForProtocol(dest, protoName)}
+	}
+	result := make([]policy.Destination, len(addresses))
+	for index, address := range addresses {
+		result[index] = dest
+		result[index].IP = address
+	}
+	return result
+}
+
+func retryDestinationAddress(err error) bool {
+	var protocolError *protocol.Error
+	if !errors.As(err, &protocolError) {
+		return false
+	}
+	switch protocolError.Code {
+	case "connect_upstream_error",
+		"socks4_request_rejected",
+		"socks5_general_failure",
+		"socks5_network_unreachable",
+		"socks5_host_unreachable",
+		"socks5_connection_refused",
+		"socks5_ttl_expired",
+		"tls_handshake":
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *Checker) resolve(ctx context.Context, target string) (policy.Destination, error) {

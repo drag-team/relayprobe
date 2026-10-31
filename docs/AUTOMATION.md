@@ -29,6 +29,10 @@ netvex check --checkpoint run.checkpoint.jsonl proxies.txt
 netvex check --resume run.checkpoint.jsonl proxies.txt
 ```
 
+For a non-resumable workflow that still needs usable survivors after `Ctrl-C`,
+combine `--working-output` with `--keep-partial`. Publication remains atomic;
+the option never exposes a half-written temporary file.
+
 Each completed result is appended before ordinary output and synchronized every
 100 records by default. Resume removes a torn final record and rejects malformed
 complete records. Existing checkpoint results are streamed into final output,

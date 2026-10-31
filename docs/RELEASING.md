@@ -1,9 +1,9 @@
 # Release process
 
 NetVex releases are created from annotated Semantic Versioning tags on a
-clean `main` branch. The release workflow builds static Linux, macOS, Windows,
-and FreeBSD amd64/arm64 archives, generates SHA-256 checksum files, and
-publishes them to GitHub.
+clean `main` branch. The release workflow builds static Linux
+amd64/386/ARMv7/ARM64/RISC-V 64 plus macOS, Windows, and FreeBSD amd64/arm64
+archives, generates SHA-256 checksum files, and publishes them to GitHub.
 `VERSION`, the changelog section, and the tag must agree exactly.
 
 ## Prepare

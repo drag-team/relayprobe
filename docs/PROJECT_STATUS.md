@@ -25,7 +25,8 @@ It is not represented as a completed independent security audit.
 - Text, commercial colon format, reordered commercial CSV, JSON, JSONL, gzip,
   multi-source, explicit stdin, deduplication, limits, and credential redaction.
 - Bounded concurrency, target pressure, rate, retries, timeouts, cancellation,
-  safe redirects, DNS policy, response assertions, and transfer measurements.
+  safe redirects, DNS policy, bounded multi-address fallback, response
+  assertions, and transfer measurements.
 - Evidence-based anonymity levels and offline longest-prefix exit metadata.
 - Target matrices, named declarative scenarios, quorum qualification, direct
   preflight, response hashes, custom CA bundles, and TLS evidence.
@@ -34,7 +35,8 @@ It is not represented as a completed independent security audit.
   sharding, bounded merging, quality gates, JUnit reports, filtering, summaries,
   completion, interactive exploration, diagnostics, and controlled benchmarks.
 - Native Linux amd64/arm64, macOS arm64, and Windows amd64 CI, with static
-  release builds for Linux, macOS, Windows, and FreeBSD amd64/arm64.
+  release builds for Linux amd64/386/ARMv7/ARM64/RISC-V 64 plus macOS,
+  Windows, and FreeBSD amd64/arm64.
 - Cross-build coverage for OpenBSD, NetBSD, DragonFly BSD, illumos, Solaris,
   and AIX; platform-specific signal and descriptor handling; Windows
   checkpoint locking, case-insensitive path collision checks, and atomic
@@ -46,8 +48,8 @@ It is not represented as a completed independent security audit.
 - Parser fuzzing: 239,885 executions in 10 seconds with no failure.
 - HTTP response fuzzing: 190,621 executions in 10 seconds covering valid,
   truncated, malformed, and oversized inputs with no failure.
-- Package coverage: core packages range from 46.1% to 100%; engine 71.6%,
-  protocol 77.9%, input 80.3%, policy 85.7%, and metadata 81.1%.
+- Package coverage: core packages range from 46.1% to 100%; engine 72.8%,
+  protocol 77.8%, input 80.3%, policy 85.7%, and metadata 81.1%.
 - Controlled 500,000-item scheduler: 812,682 items/s median at concurrency 128
   across three runs on the non-isolated delivery host.
 - Offline IPv4 metadata lookup: 411 ns/op median, zero allocations across three

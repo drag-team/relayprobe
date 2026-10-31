@@ -26,6 +26,8 @@ import (
 
 	"github.com/drag-team/netvex/internal/config"
 	"github.com/drag-team/netvex/internal/model"
+	"github.com/drag-team/netvex/internal/policy"
+	"github.com/drag-team/netvex/internal/protocol"
 )
 
 type fixedResolver struct {
@@ -108,6 +110,70 @@ func TestHTTPValidationAndIntelligence(t *testing.T) {
 	o := r.Observations[0]
 	if o.ExitIP != "8.8.8.8" || o.Anonymity != "transparent" || len(o.ForwardingEvidence) != 1 || o.ForwardingEvidence[0] != "X-Forwarded-For" || o.Metadata == nil || o.Metadata.ASN != "AS15169" {
 		t.Fatalf("%+v", o)
+	}
+}
+
+func TestDestinationAddressFallback(t *testing.T) {
+	c := baseChecker("http://target.test/")
+	c.Policy.Resolver = fixedResolver{ips: []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("8.8.8.8")}}
+	var calls atomic.Int64
+	c.Connector.DialContext = func(context.Context, string, string) (net.Conn, error) {
+		attempt := calls.Add(1)
+		client, server := net.Pipe()
+		go func() {
+			defer server.Close()
+			reader := bufio.NewReader(server)
+			connectRequest, err := http.ReadRequest(reader)
+			if err != nil {
+				return
+			}
+			if attempt == 1 {
+				if connectRequest.Host != "1.1.1.1:80" {
+					t.Errorf("first CONNECT host=%q", connectRequest.Host)
+				}
+				_, _ = io.WriteString(server, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+				return
+			}
+			if connectRequest.Host != "8.8.8.8:80" {
+				t.Errorf("fallback CONNECT host=%q", connectRequest.Host)
+			}
+			_, _ = io.WriteString(server, "HTTP/1.1 200 Connection Established\r\n\r\n")
+			if _, err := http.ReadRequest(reader); err != nil {
+				return
+			}
+			_, _ = io.WriteString(server, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+		}()
+		return client, nil
+	}
+	result := c.Check(context.Background(), model.Proxy{Protocol: model.ProtocolHTTP, Host: "proxy.test", Port: 8080})
+	if result.Status != model.StatusOK || calls.Load() != 2 || result.Observations[0].ResolvedIP != "8.8.8.8" || result.Observations[0].DestinationAttempts != 2 {
+		t.Fatalf("calls=%d result=%+v", calls.Load(), result)
+	}
+}
+
+func TestDestinationCandidatesAreBoundedAndProtocolAware(t *testing.T) {
+	resolved := []netip.Addr{
+		netip.MustParseAddr("2001:4860:4860::8888"),
+		netip.MustParseAddr("1.1.1.1"),
+		netip.MustParseAddr("8.8.8.8"),
+		netip.MustParseAddr("9.9.9.9"),
+		netip.MustParseAddr("208.67.222.222"),
+	}
+	destination := policy.Destination{IP: resolved[0], Resolved: resolved}
+	if got := destinationCandidates(destination, model.ProtocolSOCKS5, false); len(got) != maxDestinationAddresses || !got[0].IP.Is6() {
+		t.Fatalf("SOCKS5 candidates=%v", got)
+	}
+	if got := destinationCandidates(destination, model.ProtocolSOCKS4, false); len(got) != maxDestinationAddresses || !got[0].IP.Is4() {
+		t.Fatalf("SOCKS4 candidates=%v", got)
+	}
+	if got := destinationCandidates(destination, model.ProtocolSOCKS5, true); len(got) != 1 {
+		t.Fatalf("remote DNS candidates=%v", got)
+	}
+	if got := destinationCandidates(destination, model.ProtocolSOCKS4, true); len(got) != maxDestinationAddresses {
+		t.Fatalf("SOCKS4 local-DNS candidates=%v", got)
+	}
+	if retryDestinationAddress(&protocol.Error{Code: "proxy_auth_rejected"}) {
+		t.Fatal("authentication failure triggered address fallback")
 	}
 }
 

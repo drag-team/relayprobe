@@ -19,6 +19,8 @@ daemon, telemetry, or root requirement.
 - Protocol-aware negotiation, authentication, TLS, response, and timeout checks.
 - Safe destination resolution with private-network, metadata, rebinding, and redirect controls.
 - Bounded workers, queues, target concurrency, request rate, response size, and retries.
+- Bounded fallback across policy-approved destination addresses to reduce
+  dual-stack and multi-origin false negatives.
 - Streaming TXT, CSV, JSON, JSONL, NDJSON, and gzip input with exact optional deduplication.
 - Repeat measurements, reliability thresholds, latency distributions, and explainable scores.
 - Multi-target scenarios with per-target assertions, quorum qualification, and direct preflight.
@@ -37,8 +39,8 @@ daemon, telemetry, or root requirement.
 
 NetVex requires Go 1.24 or newer when building from source.
 
-Stable Linux, macOS, Windows, and FreeBSD amd64/arm64 archives and their
-SHA-256 files are published on the
+Stable Linux archives for amd64, 386, ARMv7, ARM64, and RISC-V 64 plus macOS,
+Windows, and FreeBSD amd64/arm64 archives and their SHA-256 files are published on the
 [GitHub Releases page](https://github.com/drag-team/netvex/releases).
 Source development on `main` may be newer than the latest release. See
 [versioning and releases](docs/VERSIONING.md) for the exact policy and use
@@ -66,6 +68,7 @@ Support is continuously exercised as follows:
 | Platform | Native CI | Release artifacts |
 |---|---:|---:|
 | Ubuntu x64 and ARM64 | Yes | Yes |
+| Linux 386, ARMv7, and RISC-V 64 | Cross-compiled | Yes |
 | macOS ARM64 | Yes | Yes, x64 and ARM64 |
 | Windows x64 | Yes | Yes, x64 and ARM64 |
 | FreeBSD | Cross-compiled | Yes, x64 and ARM64 |
@@ -100,6 +103,7 @@ netvex check proxies.txt
 netvex check --format jsonl --concurrency 128 proxies.txt > results.jsonl
 netvex check --concurrency auto --preflight report --checkpoint run.jsonl proxies.txt
 netvex check --resume run.jsonl proxies.txt
+netvex check --working-output working.txt --keep-partial proxies.txt
 netvex check --scenario examples/scenario.json --policy examples/quality-policy.json --junit-output netvex.xml proxies.txt
 netvex check --format txt --output-status ok proxies.txt > working-redacted.txt
 netvex check --quiet --summary-output summary.json --require-count 10 proxies.txt
@@ -363,6 +367,11 @@ validate, after committing the completed summary and other requested outputs.
 list with credentials, mode 0600. It commits only after a complete run, refuses
 to replace a file without `--force`, and cannot overwrite an input path. Treat
 the resulting file as a secret.
+
+`--keep-partial` changes only the interruption policy for `--working-output`.
+After `Ctrl-C`, NetVex atomically publishes proxies that already qualified as
+`ok`; without it, the previous output remains untouched. Checkpoints remain the
+preferred mechanism when a run will be resumed.
 
 `--checkpoint PATH` appends each completed redacted result and synchronizes at a
 bounded interval. `--resume PATH` repairs an incomplete final line, reloads

@@ -162,7 +162,7 @@ type checkOptions struct {
 	checkpointOutput, resumeCheckpoint                          string
 	qualityPolicy, junitOutput                                  string
 	checkpointSync                                              int
-	forceWorking                                                bool
+	forceWorking, keepPartial                                   bool
 	noDeduplicate, retryPermanent, stopOnSuccess, quiet         bool
 	outputStatus                                                string
 	explicit                                                    map[string]bool
@@ -241,6 +241,7 @@ func (c CLI) addCheckFlags(fs *flag.FlagSet, o *checkOptions) {
 	fs.BoolVar(&o.quiet, "quiet", false, "suppress per-proxy stdout; summaries and errors remain on stderr")
 	fs.StringVar(&o.outputStatus, "output-status", "all", "stdout results: all, ok, failed, timeout, auth_failed, policy_blocked, invalid, inconclusive, unreliable, interrupted")
 	fs.StringVar(&o.workingOutput, "working-output", "", "write validated proxies with credentials to a mode-0600 file")
+	fs.BoolVar(&o.keepPartial, "keep-partial", false, "atomically publish validated working output when interrupted")
 	fs.StringVar(&o.summaryOutput, "summary-output", "", "atomically write the run summary as JSON")
 	fs.StringVar(&o.checkpointOutput, "checkpoint", "", "append completed results to a resumable JSONL checkpoint")
 	fs.StringVar(&o.resumeCheckpoint, "resume", "", "resume and append an existing checkpoint JSONL file")
@@ -538,6 +539,10 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 	}
 	if o.resumeCheckpoint != "" && o.workingOutput != "" {
 		fmt.Fprintln(c.Stderr, "working-output cannot reconstruct credentials from a redacted resume checkpoint")
+		return ExitUsage
+	}
+	if o.keepPartial && o.workingOutput == "" {
+		fmt.Fprintln(c.Stderr, "keep-partial requires working-output")
 		return ExitUsage
 	}
 	var qualityPolicy *qualitypkg.Policy
@@ -980,6 +985,12 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 		}
 	}
 	if ctx.Err() != nil {
+		if o.keepPartial && working != nil && summary.Successful > 0 {
+			if err := commitPartialWorking(working, o.workingOutput, summary.Successful, c.Stderr); err != nil {
+				fmt.Fprintln(c.Stderr, "partial working output error:", err)
+				return ExitOperational
+			}
+		}
 		return ExitInterrupted
 	}
 	if summary.Input.Accepted == 0 {
@@ -1078,6 +1089,17 @@ func (c CLI) check(args []string, forceDetailed bool) int {
 	return ExitOK
 }
 
+func commitPartialWorking(output *secureOutput, path string, successful int, diagnostics io.Writer) error {
+	if output == nil || successful < 1 {
+		return nil
+	}
+	if err := output.Commit(); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(diagnostics, "saved %d validated proxies from interrupted run to %q\n", successful, path)
+	return nil
+}
+
 func runConfiguration(cfg config.Config, proto model.Protocol, o checkOptions) model.RunConfiguration {
 	targets := make([]string, 0, len(cfg.Targets))
 	for _, raw := range cfg.Targets {
@@ -1103,7 +1125,7 @@ func runConfiguration(cfg config.Config, proto model.Protocol, o checkOptions) m
 		TargetMatrix:    cfg.TargetMatrix, TargetQuorum: cfg.TargetQuorum,
 		RotationSamples: cfg.RotationSamples, RotationInterval: cfg.RotationInterval.String(),
 		Preflight: cfg.Preflight, AutoConcurrency: cfg.AutoConcurrency,
-		Scenario: cfg.ScenarioName, Label: o.label,
+		KeepPartial: o.keepPartial, Scenario: cfg.ScenarioName, Label: o.label,
 		Deduplicate: !o.noDeduplicate, MaxInputEntries: cfg.MaxInputEntries, ValidationTarget: targets,
 	}
 }

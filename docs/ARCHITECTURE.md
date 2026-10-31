@@ -48,6 +48,13 @@ operator explicitly requests them; successful runs can also stop at the first
 success. This avoids predictable connection multiplication while preserving an
 exhaustive mode.
 
+When local DNS returns multiple safe addresses, destination-specific CONNECT,
+SOCKS, or TLS failures may fall back across at most four unique answers within
+the existing attempt deadline. Authentication, proxy-connect, policy, and
+ordinary HTTP response failures never multiply connections. Proxy-side DNS
+continues to use one hostname request because the remote resolver selects the
+address.
+
 Deduplication retains process-local seeded 96-bit identities so credential variants
 remain distinct without exposing a credential-derived public ID or serializable
 credential verifier. Persisted IDs
